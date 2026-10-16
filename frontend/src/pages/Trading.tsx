@@ -34,6 +34,9 @@ const ScriptPanel = lazy(() =>
 const StrategiesPanel = lazy(() =>
   import('@/components/trading/StrategiesPanel').then((m) => ({ default: m.StrategiesPanel }))
 )
+const SignalsPanel = lazy(() =>
+  import('@/components/trading/SignalsPanel').then((m) => ({ default: m.SignalsPanel }))
+)
 const WatchlistPanel = lazy(() =>
   import('@/components/trading/WatchlistPanel').then((m) => ({ default: m.WatchlistPanel }))
 )
@@ -1692,6 +1695,11 @@ function TradingWorkspace({ account }: { account: string | null }) {
           {apiKey && wsUrl && panel === 'strategies' && (
             <Suspense fallback={null}>
               <StrategiesPanel getChartContext={readChartContext} />
+            </Suspense>
+          )}
+          {apiKey && wsUrl && panel === 'signals' && (
+            <Suspense fallback={null}>
+              <SignalsPanel />
             </Suspense>
           )}
           {apiKey && wsUrl && panel === 'backtest' && (
