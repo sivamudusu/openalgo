@@ -76,6 +76,7 @@ from blueprints.latency import latency_bp  # Import the latency blueprint
 from blueprints.leverage import leverage_bp  # Import the leverage blueprint
 from blueprints.log import log_bp
 from blueprints.logging import logging_bp  # Import the logging blueprint
+from blueprints.low_iv import low_iv_bp  # Low-IV BANKNIFTY terminal blueprint
 from blueprints.master_contract_status import (
     master_contract_status_bp,  # Import the master contract status blueprint
 )
@@ -95,6 +96,7 @@ from blueprints.react_app import (  # Import React frontend blueprint
     react_bp,
     serve_react_app,
 )
+from blueprints.sahasra import sahasra_bp  # Sahasra OI-model monitoring blueprint
 from blueprints.sandbox import sandbox_bp  # Import the sandbox blueprint
 from blueprints.scalping import scalping_bp  # Import the Scalping terminal blueprint
 from blueprints.search import search_bp
@@ -128,6 +130,7 @@ from database.flow_db import init_db as ensure_flow_tables_exists
 from database.historify_db import init_database as ensure_historify_tables_exists
 from database.latency_db import init_latency_db as ensure_latency_tables_exists
 from database.leverage_db import init_db as ensure_leverage_tables_exists
+from database.low_iv_db import init_db as ensure_low_iv_tables_exists
 from database.sandbox_db import init_db as ensure_sandbox_tables_exists
 from database.scalping_db import init_db as ensure_scalping_tables_exists
 from database.settings_db import init_db as ensure_settings_tables_exists
@@ -284,6 +287,7 @@ def create_app():
     # Warming here means the first backtest does not pay it and boot does not
     # block on it.
     from portfolio import warm_analytics
+
     warm_analytics()
 
     # Exempt API endpoints from CSRF protection (they use API key authentication)
@@ -333,6 +337,8 @@ def create_app():
     app.register_blueprint(historify_bp)  # Register Historify blueprint
     app.register_blueprint(ivchart_bp)  # Register IV chart blueprint
     app.register_blueprint(scalping_bp)  # Register Scalping terminal blueprint
+    app.register_blueprint(low_iv_bp)  # Register Low-IV BANKNIFTY terminal blueprint
+    app.register_blueprint(sahasra_bp)  # Register Sahasra OI-model blueprint
     app.register_blueprint(watchlist_bp)  # Register charting watchlist blueprint
     app.register_blueprint(alerts_bp)  # Register chart alert log blueprint
     app.register_blueprint(oitracker_bp)  # Register OI tracker blueprint
@@ -568,9 +574,7 @@ def create_app():
 
         from utils.url_redaction import redact_url_credentials
 
-        logger.warning(
-            f"CSRF Error on {redact_url_credentials(request.path)}: {error_description}"
-        )
+        logger.warning(f"CSRF Error on {redact_url_credentials(request.path)}: {error_description}")
 
         # Check if it's a CSRF error
         if "CSRF" in error_description or "csrf" in error_description.lower():
@@ -658,8 +662,7 @@ def create_app():
         from utils.url_redaction import redact_url_credentials
 
         logger.warning(
-            f"Rate limit exceeded for {request.remote_addr}: "
-            f"{redact_url_credentials(request.path)}"
+            f"Rate limit exceeded for {request.remote_addr}: {redact_url_credentials(request.path)}"
         )
 
         # For API requests, return JSON response
@@ -764,6 +767,7 @@ def setup_environment(app):
                 ("Historify DB", ensure_historify_tables_exists),
                 ("Flow DB", ensure_flow_tables_exists),
                 ("Scalping DB", ensure_scalping_tables_exists),
+                ("LowIV DB", ensure_low_iv_tables_exists),
                 ("Watchlist DB", ensure_watchlist_tables_exists),
                 ("Alert Log DB", ensure_alert_log_tables_exists),
                 ("Leverage DB", ensure_leverage_tables_exists),

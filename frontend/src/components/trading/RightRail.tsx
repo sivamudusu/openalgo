@@ -18,6 +18,7 @@ import {
   List,
   Shapes,
   Table2,
+  Zap,
 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
@@ -92,6 +93,15 @@ const PANELS = [
     label: 'Strategies',
     icon: Activity,
     hint: 'Strategies running on the server, Live or Sandbox',
+  },
+  // After the server strategies, because it answers the prior question:
+  // what should be traded here, by the two hosted models, with the levels
+  // and the signal state beside the buttons that act on them.
+  {
+    id: 'signals',
+    label: 'Signals',
+    icon: Zap,
+    hint: 'Low-IV and Sahasra signals, monitored and traded from here',
   },
   {
     id: 'agent',
