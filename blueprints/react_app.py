@@ -829,6 +829,11 @@ def serve_assets(filename):
             content_type = mimetypes.guess_type(filename)[0]
             if content_type:
                 response.headers["Content-Type"] = content_type
+            # Never expose the encoder wrapper's name (app.js.gz) as a download
+            # name. iOS Safari treats a Content-Disposition filename ending in
+            # .gz as an attachment, skips gzip decoding, and refuses the module
+            # with "application/x-gzip is not a valid JavaScript MIME type".
+            response.headers.pop("Content-Disposition", None)
             response.headers["Accept-Ranges"] = "none"
             break
     if response is None:

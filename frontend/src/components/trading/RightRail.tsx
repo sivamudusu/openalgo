@@ -101,7 +101,7 @@ const PANELS = [
     id: 'signals',
     label: 'Signals',
     icon: Zap,
-    hint: 'Low-IV and Sahasra signals, monitored and traded from here',
+    hint: 'Sahasra and Momentum signals for BANKNIFTY and NIFTY, monitored and traded from here',
   },
   {
     id: 'agent',

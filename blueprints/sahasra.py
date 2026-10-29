@@ -4,7 +4,9 @@ Encodes the distilled rules (R1/R2, citations in agentic_trading_v2
 output/claims): support = nearest put-OI peak at/below ATM, resistance =
 nearest call-OI peak at/above ATM, PCR regime (<0.7 bearish, 0.7-1.0
 neutral, >1.0 bullish). Levels come from the LIVE chain (what he reads on
-air), cached 60s. Manual trading reuses POST /lowiv/api/order (NFO MARKET).
+air), cached 60s per underlying. The same rules serve BANKNIFTY and NIFTY;
+the caller selects one with ?underlying=. Manual trading reuses
+POST /lowiv/api/order (NFO MARKET).
 """
 
 import time
@@ -25,7 +27,8 @@ logger = get_logger(__name__)
 
 sahasra_bp = Blueprint("sahasra_bp", __name__, url_prefix="/")
 
-UNDERLYING = "BANKNIFTY"
+UNDERLYINGS = ("BANKNIFTY", "NIFTY")
+DEFAULT_UNDERLYING = "BANKNIFTY"
 INDEX_EXCHANGE = "NSE_INDEX"
 FO_EXCHANGE = "NFO"
 IST = pytz.timezone("Asia/Kolkata")
@@ -34,7 +37,16 @@ PCR_BEARISH_MAX = 0.7
 PCR_BULLISH_MIN = 1.0
 LEVELS_TTL_SECONDS = 60
 
-_levels_cache: dict = {"ts": 0.0, "data": None}
+# One cache slot per underlying: the two chains refresh independently, and a
+# single slot would let a NIFTY request evict the BANKNIFTY levels (or worse,
+# serve NIFTY levels to the BANKNIFTY panel) every time the panels alternate.
+_levels_cache: dict[str, dict] = {}
+
+
+def _resolve_underlying(value: str | None) -> str | None:
+    """Allowlisted underlying from the query string, or None when unsupported."""
+    underlying = (value or DEFAULT_UNDERLYING).strip().upper()
+    return underlying if underlying in UNDERLYINGS else None
 
 
 def _get_api_key():
@@ -70,9 +82,9 @@ def _nearest_peak(strikes, oi_by_strike, atm, side):
     return best
 
 
-def _compute_levels(api_key):
+def _compute_levels(api_key, underlying):
     ok, resp, _ = get_expiry_dates(
-        symbol=UNDERLYING, exchange=FO_EXCHANGE, instrumenttype="options", api_key=api_key
+        symbol=underlying, exchange=FO_EXCHANGE, instrumenttype="options", api_key=api_key
     )
     if not ok:
         return None, (resp.get("message") if isinstance(resp, dict) else "expiry failed")
@@ -81,7 +93,7 @@ def _compute_levels(api_key):
         return None, "No expiries available"
     expiry = str(dates[0]).replace("-", "").replace(" ", "").upper()
     ok, chain_resp, _ = get_option_chain(
-        underlying=UNDERLYING,
+        underlying=underlying,
         exchange=FO_EXCHANGE,
         expiry_date=expiry,
         strike_count=15,
@@ -136,7 +148,7 @@ def _compute_levels(api_key):
         regime = "neutral"
     return (
         {
-            "underlying": UNDERLYING,
+            "underlying": underlying,
             "expiry": expiry,
             "atm_strike": atm,
             "spot": chain_resp.get("underlying_ltp"),
@@ -153,25 +165,28 @@ def _compute_levels(api_key):
     ), None
 
 
-def _get_levels(api_key):
+def _get_levels(api_key, underlying):
     now = time.time()
-    if _levels_cache["data"] is not None and now - _levels_cache["ts"] < LEVELS_TTL_SECONDS:
-        return _levels_cache["data"], None
-    data, err = _compute_levels(api_key)
+    cached = _levels_cache.get(underlying) or {}
+    if cached.get("data") is not None and now - cached.get("ts", 0.0) < LEVELS_TTL_SECONDS:
+        return cached["data"], None
+    data, err = _compute_levels(api_key, underlying)
     if data is not None:
-        _levels_cache["data"] = data
-        _levels_cache["ts"] = now
+        _levels_cache[underlying] = {"data": data, "ts": now}
     return data, err
 
 
 @sahasra_bp.route("/sahasra/api/levels", methods=["GET"])
 @check_session_validity
 def levels():
-    """OI support/resistance + PCR regime from the live chain (60s cache)."""
+    """OI support/resistance + PCR regime from the live chain (60s cache per underlying)."""
+    underlying = _resolve_underlying(request.args.get("underlying"))
+    if underlying is None:
+        return jsonify({"status": "error", "message": "Unsupported underlying"}), 400
     api_key = _get_api_key()
     if not api_key:
         return jsonify({"status": "error", "message": "API key not configured"}), 401
-    data, err = _get_levels(api_key)
+    data, err = _get_levels(api_key, underlying)
     if data is None:
         return jsonify({"status": "error", "message": err or "Levels unavailable"}), 502
     return jsonify({"status": "success", "data": data})
@@ -182,14 +197,17 @@ def levels():
 def signal():
     """15m-bar state vs S/R: breakout / breakdown / bounce setup / inside zone.
 
-    Uses the last two CLOSED 15m BANKNIFTY bars (no look-ahead). Regime gating
-    is reported, not enforced — the panel shows longs blocked under bearish
-    PCR rather than hiding them.
+    Uses the last two CLOSED 15m bars of the requested underlying (no
+    look-ahead). Regime gating is reported, not enforced — the panel shows
+    longs blocked under bearish PCR rather than hiding them.
     """
+    underlying = _resolve_underlying(request.args.get("underlying"))
+    if underlying is None:
+        return jsonify({"status": "error", "message": "Unsupported underlying"}), 400
     api_key = _get_api_key()
     if not api_key:
         return jsonify({"status": "error", "message": "API key not configured"}), 401
-    data, err = _get_levels(api_key)
+    data, err = _get_levels(api_key, underlying)
     if data is None:
         return jsonify({"status": "error", "message": err or "Levels unavailable"}), 502
     support, resistance = data["support"], data["resistance"]
@@ -200,7 +218,7 @@ def signal():
     start = (today - timedelta(days=4)).strftime("%Y-%m-%d")
     try:
         ok, resp, _ = get_history(
-            symbol=UNDERLYING,
+            symbol=underlying,
             exchange=INDEX_EXCHANGE,
             interval="15m",
             start_date=start,

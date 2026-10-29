@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SymbolData } from '@/lib/MarketDataManager'
+import type { SubscriptionMode, SymbolData } from '@/lib/MarketDataManager'
 import { chainGreeks, forwardFromParity, priceForGreeks, yearsToExpiry } from '@/lib/optionGreeks'
 import type { OptionChainResponse, OptionStrike } from '@/types/option-chain'
 import { useMarketData } from './useMarketData'
@@ -198,6 +198,12 @@ interface UseOptionChainLiveOptions {
    * Defaults to 0, matching the server's DEFAULT_INTEREST_RATES.
    */
   interestRate?: number
+  /**
+   * WebSocket subscription mode. The right-rail panel needs depth for its
+   * bid/ask columns; an overlay that only reads prices can ask for LTP and
+   * leave the depth traffic unsubscribed.
+   */
+  mode?: SubscriptionMode
 }
 
 /**
@@ -227,7 +233,13 @@ export function useOptionChainLive(
     pauseWhenHidden: true,
   }
 ) {
-  const { enabled, oiRefreshInterval = 30000, pauseWhenHidden = true, interestRate = 0 } = options
+  const {
+    enabled,
+    oiRefreshInterval = 30000,
+    pauseWhenHidden = true,
+    interestRate = 0,
+    mode = 'Depth',
+  } = options
 
   // Track merged data with WebSocket updates
   const [mergedData, setMergedData] = useState<OptionChainResponse | null>(null)
@@ -288,7 +300,7 @@ export function useOptionChainLive(
     connectionEpoch: wsConnectionEpoch,
   } = useMarketData({
     symbols: wsSymbols,
-    mode: 'Depth', // Get LTP + Bid/Ask depth
+    mode,
     enabled: enabled && wsSymbols.length > 0,
   })
   const currentWsData = useMemo(() => {

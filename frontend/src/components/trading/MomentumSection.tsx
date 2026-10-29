@@ -8,12 +8,18 @@
  * whether the backtest's 94.7% (n=19, one bank-friendly regime) was signal
  * or luck. Exits are premium-based exactly as backtested (T+4 / S-12 /
  * 15m), not structural. Judge it on live hit rate over 50+ trades.
+ *
+ * The same experiment runs on BANKNIFTY and NIFTY. Each variant keeps its own
+ * localStorage keys and strategy tag, so both auto loops can hold a position
+ * at once and their P&L is attributed separately. BANKNIFTY deliberately keeps
+ * the original unsuffixed keys: renaming them would orphan a position already
+ * open when this build lands.
  */
 
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { sahasraApi } from '@/api/sahasra'
-import { lowIvApi } from '@/api/low-iv'
+import { sahasraApi, type SahasraUnderlying } from '@/api/sahasra'
+import { lowIvApi, type LowIVStrategyTag } from '@/api/low-iv'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -25,6 +31,26 @@ import { peerHoldsSymbol } from './strategyPeers'
 const ENTRY_OPEN_MIN = 9 * 60 + 15
 const ENTRY_CLOSE_MIN = 14 * 60 + 30
 const COOLDOWN_MIN = 30
+
+type MomentumVariant = 'BANKNIFTY' | 'NIFTY'
+
+const VARIANTS = {
+  BANKNIFTY: {
+    underlying: 'BANKNIFTY',
+    storage: 'momentum',
+    strategy: 'Momentum',
+    label: 'Momentum',
+  },
+  NIFTY: {
+    underlying: 'NIFTY',
+    storage: 'momentum.nifty',
+    strategy: 'MomentumNifty',
+    label: 'Momentum NIFTY',
+  },
+} as const satisfies Record<
+  MomentumVariant,
+  { underlying: SahasraUnderlying; storage: string; strategy: LowIVStrategyTag; label: string }
+>
 
 interface MomPos {
   symbol: string
@@ -65,30 +91,33 @@ function istMinutes(): number {
   return h * 60 + m
 }
 
-export function MomentumSection() {
+export function MomentumSection({ variant = 'BANKNIFTY' }: { variant?: MomentumVariant }) {
+  const { underlying, storage, strategy, label } = VARIANTS[variant]
   const [lots, setLots] = useState(1)
   const [busy, setBusy] = useState(false)
   const [orderError, setOrderError] = useState<string | null>(null)
   const [autoMode, setAutoMode] = useState(() => {
     try {
-      return localStorage.getItem('momentum.autoMode') === '1'
+      return localStorage.getItem(`${storage}.autoMode`) === '1'
     } catch {
       return false
     }
   })
   const [autoPos, setAutoPos] = useState<MomPos | null>(() =>
-    loadJSON<MomPos | null>('momentum.autoPos', null)
+    loadJSON<MomPos | null>(`${storage}.autoPos`, null)
   )
   const [lastAutoExitTs, setLastAutoExitTs] = useState<number>(() =>
-    Number(loadJSON('momentum.lastExit', 0))
+    Number(loadJSON(`${storage}.lastExit`, 0))
   )
   const [entriesCount, setEntriesCount] = useState(() =>
-    loadJSON<{ date: string; count: number }>('momentum.entries', { date: '', count: 0 })
+    loadJSON<{ date: string; count: number }>(`${storage}.entries`, { date: '', count: 0 })
   )
-  const [targetPct, setTargetPct] = useState(() => Number(loadJSON('momentum.target', 4)))
-  const [stopPct, setStopPct] = useState(() => Number(loadJSON('momentum.stop', 12)))
-  const [maxHoldMin, setMaxHoldMin] = useState(() => Number(loadJSON('momentum.hold', 15)))
-  const [maxEntries, setMaxEntries] = useState(() => Number(loadJSON('momentum.maxEntries', 5)))
+  const [targetPct, setTargetPct] = useState(() => Number(loadJSON(`${storage}.target`, 4)))
+  const [stopPct, setStopPct] = useState(() => Number(loadJSON(`${storage}.stop`, 12)))
+  const [maxHoldMin, setMaxHoldMin] = useState(() => Number(loadJSON(`${storage}.hold`, 15)))
+  const [maxEntries, setMaxEntries] = useState(() =>
+    Number(loadJSON(`${storage}.maxEntries`, 5))
+  )
   const [autoBook, setAutoBook] = useState<{
     qty: number
     avg_price: number
@@ -100,40 +129,40 @@ export function MomentumSection() {
 
   useEffect(() => {
     try {
-      localStorage.setItem('momentum.autoMode', autoMode ? '1' : '0')
+      localStorage.setItem(`${storage}.autoMode`, autoMode ? '1' : '0')
     } catch {
       /* storage unavailable */
     }
-  }, [autoMode])
+  }, [autoMode, storage])
   useEffect(() => {
     try {
-      if (autoPos) localStorage.setItem('momentum.autoPos', JSON.stringify(autoPos))
-      else localStorage.removeItem('momentum.autoPos')
+      if (autoPos) localStorage.setItem(`${storage}.autoPos`, JSON.stringify(autoPos))
+      else localStorage.removeItem(`${storage}.autoPos`)
     } catch {
       /* storage unavailable */
     }
-  }, [autoPos])
+  }, [autoPos, storage])
   useEffect(() => {
     try {
-      localStorage.setItem('momentum.lastExit', String(lastAutoExitTs))
+      localStorage.setItem(`${storage}.lastExit`, String(lastAutoExitTs))
       localStorage.setItem(
-        'momentum.entries',
+        `${storage}.entries`,
         JSON.stringify(entriesCount.date === todayStr() ? entriesCount : { date: todayStr(), count: 0 })
       )
     } catch {
       /* storage unavailable */
     }
-  }, [lastAutoExitTs, entriesCount])
+  }, [lastAutoExitTs, entriesCount, storage])
   useEffect(() => {
     try {
-      localStorage.setItem('momentum.target', String(targetPct))
-      localStorage.setItem('momentum.stop', String(stopPct))
-      localStorage.setItem('momentum.hold', String(maxHoldMin))
-      localStorage.setItem('momentum.maxEntries', String(maxEntries))
+      localStorage.setItem(`${storage}.target`, String(targetPct))
+      localStorage.setItem(`${storage}.stop`, String(stopPct))
+      localStorage.setItem(`${storage}.hold`, String(maxHoldMin))
+      localStorage.setItem(`${storage}.maxEntries`, String(maxEntries))
     } catch {
       /* storage unavailable */
     }
-  }, [targetPct, stopPct, maxHoldMin, maxEntries])
+  }, [targetPct, stopPct, maxHoldMin, maxEntries, storage])
 
   const todayEntries = entriesCount.date === todayStr() ? entriesCount.count : 0
   const recordEntry = () => {
@@ -144,8 +173,8 @@ export function MomentumSection() {
   }
 
   const signalQ = useQuery({
-    queryKey: ['sahasra-signal'],
-    queryFn: sahasraApi.getSignal,
+    queryKey: ['sahasra-signal', underlying],
+    queryFn: () => sahasraApi.getSignal(underlying),
     refetchInterval: 30000,
   })
   const data = signalQ.data?.data ?? null
@@ -181,7 +210,7 @@ export function MomentumSection() {
       if (autoPos.estimated && Date.now() - autoPos.entryTs < 60000) return
       setAutoPos(null)
       setLastAutoExitTs(Date.now())
-      showToast.info('Momentum position is flat in the book — tracking cleared, no exit sent')
+      showToast.info(`${label} position is flat in the book — tracking cleared, no exit sent`)
       return
     }
     const updates: Partial<MomPos> = {}
@@ -202,7 +231,7 @@ export function MomentumSection() {
     if ((data.regime === 'bearish' && side === 'CE') || (data.regime === 'bullish' && side === 'PE'))
       return
     if (maxEntries > 0 && todayEntries >= maxEntries) {
-      setOrderError(`Momentum blocked: day cap ${todayEntries}/${maxEntries} reached`)
+      setOrderError(`${label} blocked: day cap ${todayEntries}/${maxEntries} reached`)
       return
     }
     if (autoBook && autoBook.qty !== 0) return
@@ -211,18 +240,18 @@ export function MomentumSection() {
     if (Date.now() - lastAutoExitTs < COOLDOWN_MIN * 60000) return
     const sym = side === 'CE' ? data.atm_ce_symbol : data.atm_pe_symbol
     if (!sym) return
-    if (peerHoldsSymbol(sym, 'momentum.autoPos')) return // a peer loop holds this leg
+    if (peerHoldsSymbol(sym, `${storage}.autoPos`)) return // a peer loop holds this leg
     const lot = data.atm_lotsize && data.atm_lotsize > 0 ? data.atm_lotsize : 30
     const qty = lots * lot
     const entryLtp = tickOf(sym)
     if (!entryLtp) {
-      setOrderError('Momentum blocked: no live price for the ATM leg yet')
+      setOrderError(`${label} blocked: no live price for the ATM leg yet`)
       return
     }
     firingRef.current = true
     setBusy(true)
     lowIvApi
-      .placeOrder({ symbol: sym, exchange: 'NFO', action: 'BUY', product: 'MIS', quantity: qty, ltp: entryLtp, strategy: 'Momentum' })
+      .placeOrder({ symbol: sym, exchange: 'NFO', action: 'BUY', product: 'MIS', quantity: qty, ltp: entryLtp, strategy })
       .then((res) => {
         if (res.status === 'success') {
           setAutoPos({
@@ -231,14 +260,14 @@ export function MomentumSection() {
           })
           recordEntry()
           setOrderError(null)
-          showToast.success(`Momentum BUY ${sym} x${qty} (fill confirming…)`)
+          showToast.success(`${label} BUY ${sym} x${qty} (fill confirming…)`)
           refreshBook(sym)
         } else {
-          setOrderError(`Momentum order rejected: ${res.message ?? 'unknown reason'}`)
+          setOrderError(`${label} order rejected: ${res.message ?? 'unknown reason'}`)
         }
       })
       .catch((e) => {
-        setOrderError(`Momentum order failed: ${e instanceof Error ? e.message : 'unknown error'}`)
+        setOrderError(`${label} order failed: ${e instanceof Error ? e.message : 'unknown error'}`)
       })
       .finally(() => {
         firingRef.current = false
@@ -264,7 +293,7 @@ export function MomentumSection() {
             : null
     if (!reason) return
     if (autoBook && autoBook.qty < 0) {
-      setOrderError('Momentum exit blocked: book shows a short leg — close it manually')
+      setOrderError(`${label} exit blocked: book shows a short leg — close it manually`)
       return
     }
     if (autoBook && autoBook.qty === 0) return
@@ -277,20 +306,20 @@ export function MomentumSection() {
     lowIvApi
       .closeLeg({
         symbol: autoPos.symbol, exchange: autoPos.exchange, action: 'SELL',
-        product: autoPos.product, quantity: exitQty, strategy: 'Momentum',
+        product: autoPos.product, quantity: exitQty, strategy,
       })
       .then((res) => {
         if (res.status === 'success') {
-          showToast.success(`Momentum exit (${reason}) ${autoPos.symbol} @ ${ltp.toFixed(2)}`)
+          showToast.success(`${label} exit (${reason}) ${autoPos.symbol} @ ${ltp.toFixed(2)}`)
           setAutoPos(null)
           setLastAutoExitTs(Date.now())
           setOrderError(null)
         } else {
-          setOrderError(`Momentum exit rejected (${reason}): ${res.message ?? 'unknown reason'}`)
+          setOrderError(`${label} exit rejected (${reason}): ${res.message ?? 'unknown reason'}`)
         }
       })
       .catch((e) => {
-        setOrderError(`Momentum exit failed (${reason}): ${e instanceof Error ? e.message : 'unknown error'}`)
+        setOrderError(`${label} exit failed (${reason}): ${e instanceof Error ? e.message : 'unknown error'}`)
       })
       .finally(() => {
         closingRef.current = false
@@ -372,7 +401,7 @@ export function MomentumSection() {
       ) : (
         autoPos && (
           <div className="rounded-md border p-3 text-sm">
-            Auto is OFF but a momentum position is still open:{' '}
+            Auto is OFF but a {label} position is still open:{' '}
             <span className="font-mono">{autoPos.symbol}</span> — turn Auto back on to resume exit
             monitoring.
           </div>

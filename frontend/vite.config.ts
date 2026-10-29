@@ -59,6 +59,13 @@ export default defineConfig({
     chunkSizeWarningLimit: 1100,
     rollupOptions: {
       output: {
+        // Cache-busting build salt: every emitted URL carries it, so a deploy
+        // cannot reuse an old asset URL that a proxy or CDN cached wrongly.
+        // This value must be changed for every deploy that needs to bypass
+        // caches: a chunk whose content hash is unchanged keeps the same URL.
+        entryFileNames: 'assets/[name]-[hash]-20261019c.js',
+        chunkFileNames: 'assets/[name]-[hash]-20261019c.js',
+        assetFileNames: 'assets/[name]-[hash]-20261019c[extname]',
         // Split the stable framework libs into their own long-cached chunk
         // so an app-code change doesn't bust react/router/query for returning
         // users, and the browser can fetch vendor + page chunks in parallel.

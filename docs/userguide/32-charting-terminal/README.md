@@ -23,7 +23,7 @@ says so and links to `/apikey`.
 
 | Region | What it holds |
 |---|---|
-| Top bar | Symbol, interval, chart type, product, quantity, indicators, comparisons, layout, sync, One-Click, replay, undo and redo, feed light, full screen, camera and CSV export |
+| Top bar | Symbol, interval, chart type, product, quantity, indicators, option chain overlay, comparisons, layout, sync, One-Click, replay, undo and redo, feed light, full screen, camera and CSV export |
 | Left rail | Drawing tools in eleven groups, magnet, keep-tool-selected lock, undo, redo, delete |
 | Centre | Chart grid with up to eight panes in presets, or sixteen in an imported workspace |
 | Right panel | Watchlist, option chain, Objects, or the chart assistant |
@@ -63,6 +63,36 @@ available through the chart's main symbol search.
 Each chart retains its comparison list and scale mode. Named workspaces save
 these settings with the rest of that chart. Comparison controls are unavailable
 during replay selection, loading and playback.
+
+## Option Chain Overlay
+
+Select a chart and choose **Chain** on the toolbar, then switch the overlay on.
+The chart must be an instrument with an options chain: NSE and BSE cash or index
+charts, NFO, BFO, CDS and MCX. An expression, or an exchange without options,
+has no Chain control.
+
+The overlay draws the chain as a profile beside the price axis. At each strike
+the call bar sits above the put bar and both grow left from the right edge of
+the price pane, so the ladder lines up with the prices it belongs to. Open
+interest is the default measure; the menu can show volume, LTP, implied
+volatility, delta, gamma, theta or vega instead. Negative Greeks keep their sign
+in the value label.
+
+Two dashed lines mark the strikes carrying the most open interest: **R** is the
+call strike the market has to clear, **S** is the put strike it is defending.
+They stay on open interest when the bars show another measure, because that is
+what makes a strike support or resistance. The band at the at-the-money strike
+is a reference, not a level.
+
+The expiry defaults to the nearest; the menu lists the others. The menu fetches
+10, 15 or 20 strikes around at-the-money. **Value labels** prints the measure
+beside each bar; **Support / resistance** hides or shows the two lines. The
+settings are remembered per chart pane, so two panes can show different chains.
+The overlay is off by default.
+
+Prices stream over the WebSocket feed. Open interest and volume refresh every
+30 seconds; the Greeks are recomputed from the streaming prices between those
+refreshes. The overlay is display only: clicking a bar does not open an order.
 
 ## Saving Images and Data
 

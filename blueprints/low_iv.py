@@ -44,7 +44,14 @@ low_iv_bp = Blueprint("low_iv_bp", __name__, url_prefix="/")
 LOW_IV_STRATEGY = LOW_IV_DEFAULTS["strategy_tag"]
 # Sidebar strategies share this order path; the tag attributes trades for
 # per-strategy P&L. Allowlist only — free text would fragment attribution.
-VALID_STRATEGIES = {"LowIV", "Sahasra", "Momentum"}
+VALID_STRATEGIES = {
+    "LowIV",
+    "Sahasra",
+    "SahasraNifty",
+    "Momentum",
+    "MomentumNifty",
+    "Video",
+}
 UNDERLYING = LOW_IV_DEFAULTS["underlying"]
 INDEX_EXCHANGE = LOW_IV_DEFAULTS["index_exchange"]
 FO_EXCHANGE = LOW_IV_DEFAULTS["fo_exchange"]
