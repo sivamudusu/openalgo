@@ -1,7 +1,9 @@
 import { webClient } from './client'
 
+export type SahasraUnderlying = 'BANKNIFTY' | 'NIFTY'
+
 export interface SahasraLevels {
-  underlying: string
+  underlying: SahasraUnderlying
   expiry: string
   atm_strike: number
   spot?: number | null
@@ -29,15 +31,20 @@ export interface SahasraLevels {
 }
 
 // Sahasra OI-model monitoring. Served by blueprints/sahasra.py under the root
-// path (not /api/v1), so webClient (session + CSRF aware) is used.
+// path (not /api/v1), so webClient (session + CSRF aware) is used. The
+// underlying defaults to BANKNIFTY so existing callers keep their behaviour.
 export const sahasraApi = {
-  getLevels: async (): Promise<{ status: string; data: SahasraLevels; message?: string }> => {
-    const response = await webClient.get('/sahasra/api/levels')
+  getLevels: async (
+    underlying: SahasraUnderlying = 'BANKNIFTY'
+  ): Promise<{ status: string; data: SahasraLevels; message?: string }> => {
+    const response = await webClient.get('/sahasra/api/levels', { params: { underlying } })
     return response.data
   },
 
-  getSignal: async (): Promise<{ status: string; data: SahasraLevels; message?: string }> => {
-    const response = await webClient.get('/sahasra/api/signal')
+  getSignal: async (
+    underlying: SahasraUnderlying = 'BANKNIFTY'
+  ): Promise<{ status: string; data: SahasraLevels; message?: string }> => {
+    const response = await webClient.get('/sahasra/api/signal', { params: { underlying } })
     return response.data
   },
 }

@@ -75,6 +75,8 @@ import { ChartToolbar } from './ChartToolbar'
 import { ComparisonMenu } from './ComparisonMenu'
 import { DrawingStyleBar } from './DrawingStyleBar'
 import { DrawingTextDialog, type TextRequest } from './DrawingTextDialog'
+import { OptionChainOverlayControl } from './OptionChainOverlayControl'
+import { OptionChainOverlayProvider } from './OptionChainOverlayProvider'
 import { PriceScaleMenu } from './PriceScaleMenu'
 import { ChartOrderBridgeContext } from './dock/chartOrderBridge'
 import {
@@ -419,6 +421,8 @@ export function ChartPane({
   const { mode, appMode } = useThemeStore()
 
   const [ready, setReady] = useState(false)
+  /** The terminal as state, so the overlay provider can attach once it exists. */
+  const [paneTerminal, setPaneTerminal] = useState<TradingTerminal | null>(null)
   /**
    * The load state drawn over the chart: dots for a slow load, a card for no
    * data or a failure. The gate holds the dots back for a fast load.
@@ -652,6 +656,7 @@ export function ChartPane({
       current = false
       preparedRef.current = false
       terminalCbRef.current?.(paneId, null)
+      setPaneTerminal(null)
       terminal?.destroy()
       if (terminalRef.current === terminal) terminalRef.current = null
     }
@@ -683,6 +688,7 @@ export function ChartPane({
         })
         terminal = owner
         terminalRef.current = owner
+        setPaneTerminal(owner)
         owner.setWorkspaceTransitionLocked(lockedRef.current)
         owner.setArmed(armedRef.current && !lockedRef.current)
         terminalCbRef.current?.(paneId, owner)
@@ -1139,6 +1145,12 @@ export function ChartPane({
         onFocusPane?.(terminalRef.current, paneId)
       }}
     >
+      <OptionChainOverlayProvider
+        paneId={paneId}
+        apiKey={apiKey}
+        instrument={sym}
+        terminal={paneTerminal}
+      >
       <ChartToolbar host={toolbarHost} active={focused} fullscreen={fullscreen}>
         <div
           role="toolbar"
@@ -1312,6 +1324,8 @@ export function ChartPane({
               )}
             </Button>
           </Tip>
+
+          <OptionChainOverlayControl menuHost={menuHost} />
 
           <Tip tip={{ title: 'Alerts', sub: 'Create and manage price alerts for this chart' }}>
             <Button
@@ -2327,6 +2341,7 @@ export function ChartPane({
           />
         </Suspense>
       )}
+      </OptionChainOverlayProvider>
     </section>
   )
 }

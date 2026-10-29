@@ -280,6 +280,7 @@ import {
 } from './legend'
 import { fileForScriptId, isScriptInstance } from './openscriptFiles'
 import { loadOpenScriptStudies, SCRIPT_ALERT_EVENT } from './openscriptStudies'
+import type { OptionChainOverlay } from './optionChainOverlay'
 import { profileIntervalSupported, selectProfileInterval } from './profileIntervals'
 import { ProfileLayer, type ProfileMenuAction } from './profileLayer'
 import {
@@ -1236,6 +1237,11 @@ export class TradingTerminal {
   /** The refusal last said for each study, so a rebuild does not say it again. */
   private readonly reportedRefusals = new Map<string, string>()
   private profileLayer: ProfileLayer | null = null
+  /**
+   * The pane's option-chain overlay, owned by React and retained here so a
+   * chart rebuild reattaches it to the new chart. Null when the overlay is off.
+   */
+  private optionChainOverlay: OptionChainOverlay | null = null
   private availableIntervals: string[] = ['1m', '5m', '15m', '1h', 'D']
   /** The bottom bar's preset range for this pane, kept while its interval holds. */
   private rangeChoice: RangeChoice | null = null
@@ -2386,6 +2392,30 @@ export class TradingTerminal {
       this.objects?.register(profileObjectProvider(kind, () => this.requestChartSettings())) ?? null
   }
 
+  /**
+   * Reattach the overlay after a chart rebuild. The primitive is owned by the
+   * pane's React provider; this only gives it the new chart's pane.
+   */
+  private installOptionChainOverlay(): void {
+    const chart = this.chart
+    const overlay = this.optionChainOverlay
+    if (!chart || !overlay || this.destroyed) return
+    chart.addPrimitive(overlay, chart.primaryPaneIndex?.() ?? 0)
+  }
+
+  /**
+   * Show or hide the pane's option-chain overlay. The primitive survives chart
+   * rebuilds, so the provider hands it over once and only toggles membership.
+   */
+  setOptionChainOverlay(overlay: OptionChainOverlay | null): void {
+    if (this.optionChainOverlay === overlay) return
+    const previous = this.optionChainOverlay
+    this.optionChainOverlay = overlay
+    if (previous) this.chart?.removePrimitive(previous)
+    if (!overlay || !this.chart || this.destroyed) return
+    this.chart.addPrimitive(overlay, this.chart.primaryPaneIndex?.() ?? 0)
+  }
+
   /** Open the pane-owned chart dialog from the canvas or object inventory. */
   private requestChartSettings(): void {
     void this.chartSettings().then((request) => {
@@ -2620,6 +2650,7 @@ export class TradingTerminal {
     this.setPriceData()
     if (!this.preparingWorkspace) this.installComparisons()
     this.installProfile()
+    this.installOptionChainOverlay()
 
     this.applyDefaultViewport()
 
@@ -7966,6 +7997,7 @@ export class TradingTerminal {
     }
     this.profileLayer?.dispose()
     this.profileLayer = null
+    this.optionChainOverlay = null
     try {
       this.chart?.destroy()
     } catch {

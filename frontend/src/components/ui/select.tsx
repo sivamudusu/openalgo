@@ -49,10 +49,19 @@ function SelectContent({
   children,
   position = 'item-aligned',
   align = 'center',
+  container,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Content>) {
+}: React.ComponentProps<typeof SelectPrimitive.Content> & {
+  /**
+   * Portal target. Defaults to the body, which is wrong inside a fullscreen
+   * element: only that element's subtree is painted, so a select portalled to
+   * the body opens invisibly. A caller in fullscreen passes the element it made
+   * fullscreen. Mirrors the same prop on PopoverContent.
+   */
+  container?: HTMLElement | null
+}) {
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={container ?? undefined}>
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(

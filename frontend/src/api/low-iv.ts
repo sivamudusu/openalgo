@@ -1,5 +1,14 @@
 import { webClient } from './client'
 
+/** Sidebar strategy tags the order path accepts for per-strategy P&L attribution. */
+export type LowIVStrategyTag =
+  | 'LowIV'
+  | 'Sahasra'
+  | 'SahasraNifty'
+  | 'Momentum'
+  | 'MomentumNifty'
+  | 'Video'
+
 export interface LowIVConfig {
   underlying: string
   index_exchange: string
@@ -233,7 +242,7 @@ export const lowIvApi = {
     ltp?: number
     bid?: number
     ask?: number
-    strategy?: 'LowIV' | 'Sahasra' | 'Momentum'
+    strategy?: LowIVStrategyTag
   }): Promise<{ status: string; message?: string; data?: unknown }> => {
     const response = await webClient.post('/lowiv/api/order', req)
     return response.data
@@ -245,7 +254,7 @@ export const lowIvApi = {
     action: 'BUY' | 'SELL'
     product: string
     quantity: number
-    strategy?: 'LowIV' | 'Sahasra' | 'Momentum'
+    strategy?: LowIVStrategyTag
   }): Promise<{ status: string; message?: string }> => {
     const response = await webClient.post('/lowiv/api/close_leg', req)
     return response.data

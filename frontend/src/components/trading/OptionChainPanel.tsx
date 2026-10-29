@@ -46,6 +46,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useMarketStatus } from '@/hooks/useMarketStatus'
+import {
+  formatOptionChainMetric,
+  OPTION_CHAIN_METRIC_GROUPS,
+  OPTION_CHAIN_METRICS,
+  type OptionChainMetric,
+  optionChainMetricValue,
+} from '@/lib/optionChainMetrics'
 import { needsPreviousClose } from '@/lib/trading/previousClose'
 import type { SearchRow } from '@/lib/trading/terminal'
 import { cn } from '@/lib/utils'
@@ -59,39 +66,6 @@ const PREFS_KEY = 'oa-trading-optionchain'
 /** Derivative segments that carry an option chain. */
 const EXCHANGES = ['NFO', 'BFO', 'MCX', 'CDS'] as const
 type Exchange = (typeof EXCHANGES)[number]
-
-/**
- * What the two side columns show.
- *
- * LTP is the default because it is what a chart click is about. Everything
- * else rides along in the same response, so offering it costs nothing: the
- * service inverts Black-76 over the quotes it has already fetched and returns
- * the whole Greek set with the prices, in one broker call.
- *
- * `dp` is per metric because the magnitudes are nothing alike. Gamma for an
- * index option is around 0.0019, so at the two decimals that suit delta and
- * theta every strike on the board would read 0.00.
- *
- * `symbol` is the notation the instrument is actually discussed in. A trader
- * reads a column of deltas under a bare capital delta without being told; the
- * name is kept beside it in the picker so nothing depends on recognising it.
- * Sigma for implied volatility, and vega keeps a Latin V because it is not a
- * Greek letter at all, whatever the family is called.
- */
-const METRICS = [
-  { id: 'ltp', label: 'LTP', symbol: 'LTP', group: 'Price', dp: 2 },
-  { id: 'oi', label: 'OI', symbol: 'OI', group: 'Price', dp: 0 },
-  { id: 'volume', label: 'Volume', symbol: 'Vol', group: 'Price', dp: 0 },
-  { id: 'iv', label: 'IV', symbol: 'σ', group: 'Greeks', dp: 1 },
-  { id: 'delta', label: 'Delta', symbol: 'Δ', group: 'Greeks', dp: 2 },
-  { id: 'gamma', label: 'Gamma', symbol: 'Γ', group: 'Greeks', dp: 4 },
-  { id: 'theta', label: 'Theta', symbol: 'Θ', group: 'Greeks', dp: 2 },
-  { id: 'vega', label: 'Vega', symbol: 'V', group: 'Greeks', dp: 2 },
-] as const
-type Metric = (typeof METRICS)[number]['id']
-
-/** The order the picker lists them in, so the groups stay together. */
-const METRIC_GROUPS = ['Price', 'Greeks'] as const
 
 /** Strikes either side of ATM. Twenty rows is about one panel-height of scroll. */
 const STRIKE_COUNT = 10
@@ -130,44 +104,9 @@ function readPrefs(): Prefs {
   }
 }
 
-/** Lakhs and crores: OI in raw units does not fit a 64px column. */
-function compact(value: number | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) return '-'
-  if (value >= 1e7) return `${(value / 1e7).toFixed(2)}Cr`
-  if (value >= 1e5) return `${(value / 1e5).toFixed(2)}L`
-  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`
-  return String(Math.round(value))
-}
-
-/**
- * One leg's value for the selected metric.
- *
- * Everything unavailable renders as a dash rather than a zero. A leg with no
- * quote, or one on an expired chain, cannot be inverted, and printing 0.00
- * would read as a real measurement of zero volatility or zero sensitivity.
- * That distinction is the whole reason to show Greeks at all.
- */
-function metricOf(leg: OptionData | null, metric: Metric): string {
-  if (!leg) return '-'
-
-  if (metric === 'ltp') return leg.ltp > 0 ? leg.ltp.toFixed(2) : '-'
-  if (metric === 'oi') return compact(leg.oi)
-  if (metric === 'volume') return compact(leg.volume)
-
-  const dp = METRICS.find((m) => m.id === metric)?.dp ?? 2
-  const value =
-    metric === 'iv'
-      ? leg.implied_volatility
-      : metric === 'delta'
-        ? leg.delta
-        : metric === 'gamma'
-          ? leg.gamma
-          : metric === 'theta'
-            ? leg.theta
-            : leg.vega
-
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
-  return metric === 'iv' ? `${value.toFixed(dp)}%` : value.toFixed(dp)
+/** One leg's value for the selected metric, as the table prints it. */
+function metricOf(leg: OptionData | null, metric: OptionChainMetric): string {
+  return formatOptionChainMetric(optionChainMetricValue(leg, metric), metric)
 }
 
 /**
@@ -226,7 +165,7 @@ export function OptionChainPanel({ apiKey, onPick, activeSymbol }: Props) {
   const [prefs, setPrefs] = useState<Prefs>(readPrefs)
   const [underlyings, setUnderlyings] = useState<string[]>([])
   const [expiries, setExpiries] = useState<string[]>([])
-  const [metric, setMetric] = useState<Metric>('ltp')
+  const [metric, setMetric] = useState<OptionChainMetric>('ltp')
   const [pickerOpen, setPickerOpen] = useState(false)
   /**
    * One slot per loader, not one shared between them.
@@ -398,7 +337,7 @@ export function OptionChainPanel({ apiKey, onPick, activeSymbol }: Props) {
     return ltp > prev ? 'up' : 'down'
   })()
 
-  const activeMetric = METRICS.find((m) => m.id === metric)
+  const activeMetric = OPTION_CHAIN_METRICS.find((m) => m.id === metric)
   const metricLabel = activeMetric?.symbol ?? ''
 
   return (
@@ -516,17 +455,17 @@ export function OptionChainPanel({ apiKey, onPick, activeSymbol }: Props) {
           </SelectContent>
         </Select>
 
-        <Select value={metric} onValueChange={(value) => setMetric(value as Metric)}>
+        <Select value={metric} onValueChange={(value) => setMetric(value as OptionChainMetric)}>
           <SelectTrigger className="h-8 w-[104px] text-[12px]" aria-label="Metric shown">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {METRIC_GROUPS.map((group) => (
+            {OPTION_CHAIN_METRIC_GROUPS.map((group) => (
               <SelectGroup key={group}>
                 <SelectLabel className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
                   {group}
                 </SelectLabel>
-                {METRICS.filter((m) => m.group === group).map((m) => (
+                {OPTION_CHAIN_METRICS.filter((m) => m.group === group).map((m) => (
                   <SelectItem key={m.id} value={m.id} className="text-[12px]">
                     {/* Notation and name together: the column header carries
                         only the notation, so this is where the two are tied. */}

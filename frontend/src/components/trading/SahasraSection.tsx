@@ -10,24 +10,48 @@
  *   measured-move style); SL = structural reclaim (15m state back inside
  *   the range / against the trade); safety rails clearly labeled as ours:
  *   premium catastrophic stop % + max-hold minutes.
- * - Manual ATM legs anytime. Everything through the shared NFO order path,
- *   so Sandbox/Live follows the global mode. Book reconciliation (never
- *   exit what the book says is flat) mirrors the Low-IV section.
+ * Everything goes through the shared NFO order path, so Sandbox/Live follows
+ * the global mode. Book reconciliation (never exit what the book says is
+ * flat) mirrors the Low-IV section.
+ *
+ * The same rules run on BANKNIFTY and NIFTY. Each variant keeps its own
+ * localStorage keys and strategy tag, so both auto loops can hold a position
+ * at once and their P&L is attributed separately. BANKNIFTY deliberately keeps
+ * the original unsuffixed keys: renaming them would orphan a position already
+ * open when this build lands.
  */
 
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { sahasraApi, type SahasraLevels } from '@/api/sahasra'
-import { lowIvApi } from '@/api/low-iv'
+import { sahasraApi, type SahasraLevels, type SahasraUnderlying } from '@/api/sahasra'
+import { lowIvApi, type LowIVStrategyTag } from '@/api/low-iv'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { useMarketData } from '@/hooks/useMarketData'
 import { showToast } from '@/utils/toast'
 import { hintFor } from './LowIvSection'
 import { peerHoldsSymbol } from './strategyPeers'
+
+type SahasraVariant = 'BANKNIFTY' | 'NIFTY'
+
+const VARIANTS = {
+  BANKNIFTY: {
+    underlying: 'BANKNIFTY',
+    storage: 'sahasra',
+    strategy: 'Sahasra',
+    label: 'Sahasra',
+  },
+  NIFTY: {
+    underlying: 'NIFTY',
+    storage: 'sahasra.nifty',
+    strategy: 'SahasraNifty',
+    label: 'Sahasra NIFTY',
+  },
+} as const satisfies Record<
+  SahasraVariant,
+  { underlying: SahasraUnderlying; storage: string; strategy: LowIVStrategyTag; label: string }
+>
 
 const STATE_TEXT: Record<string, string> = {
   breakout_up: 'Breakout above resistance — long CE per the plan',
@@ -107,29 +131,36 @@ function nextLevel(
   return below.reduce((a, b) => (b.put_oi > a.put_oi ? b : a)).strike
 }
 
-export function SahasraSection() {
+export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVariant }) {
+  const { underlying, storage, strategy, label } = VARIANTS[variant]
   const [lots, setLots] = useState(1)
   const [busy, setBusy] = useState(false)
   const [orderError, setOrderError] = useState<string | null>(null)
   const [autoMode, setAutoMode] = useState(() => {
     try {
-      return localStorage.getItem('sahasra.autoMode') === '1'
+      return localStorage.getItem(`${storage}.autoMode`) === '1'
     } catch {
       return false
     }
   })
   const [autoPos, setAutoPos] = useState<SahPos | null>(() =>
-    loadJSON<SahPos | null>('sahasra.autoPos', null)
+    loadJSON<SahPos | null>(`${storage}.autoPos`, null)
   )
   const [lastAutoExitTs, setLastAutoExitTs] = useState<number>(() =>
-    Number(loadJSON('sahasra.lastExit', 0))
+    Number(loadJSON(`${storage}.lastExit`, 0))
   )
   const [entriesLog, setEntriesLog] = useState<EntriesLog>(() =>
-    loadJSON<EntriesLog>('sahasra.entries', { date: todayStr(), count: 0, symbols: [] })
+    loadJSON<EntriesLog>(`${storage}.entries`, { date: todayStr(), count: 0, symbols: [] })
   )
-  const [maxEntries, setMaxEntries] = useState(() => Number(loadJSON('sahasra.maxEntries', 3)))
-  const [maxHoldMin, setMaxHoldMin] = useState(() => Number(loadJSON('sahasra.maxHold', 30)))
-  const [premStopPct, setPremStopPct] = useState(() => Number(loadJSON('sahasra.premStop', 15)))
+  const [maxEntries, setMaxEntries] = useState(() =>
+    Number(loadJSON(`${storage}.maxEntries`, 3))
+  )
+  const [maxHoldMin, setMaxHoldMin] = useState(() =>
+    Number(loadJSON(`${storage}.maxHold`, 30))
+  )
+  const [premStopPct, setPremStopPct] = useState(() =>
+    Number(loadJSON(`${storage}.premStop`, 15))
+  )
   const [autoBook, setAutoBook] = useState<{
     qty: number
     avg_price: number
@@ -144,42 +175,42 @@ export function SahasraSection() {
 
   useEffect(() => {
     try {
-      localStorage.setItem('sahasra.autoMode', autoMode ? '1' : '0')
+      localStorage.setItem(`${storage}.autoMode`, autoMode ? '1' : '0')
     } catch {
       /* storage unavailable */
     }
-  }, [autoMode])
+  }, [autoMode, storage])
   useEffect(() => {
     try {
-      if (autoPos) localStorage.setItem('sahasra.autoPos', JSON.stringify(autoPos))
-      else localStorage.removeItem('sahasra.autoPos')
+      if (autoPos) localStorage.setItem(`${storage}.autoPos`, JSON.stringify(autoPos))
+      else localStorage.removeItem(`${storage}.autoPos`)
     } catch {
       /* storage unavailable */
     }
-  }, [autoPos])
+  }, [autoPos, storage])
   useEffect(() => {
     try {
-      localStorage.setItem('sahasra.lastExit', String(lastAutoExitTs))
+      localStorage.setItem(`${storage}.lastExit`, String(lastAutoExitTs))
     } catch {
       /* storage unavailable */
     }
-  }, [lastAutoExitTs])
+  }, [lastAutoExitTs, storage])
   useEffect(() => {
     try {
-      localStorage.setItem('sahasra.entries', JSON.stringify(entriesLog))
+      localStorage.setItem(`${storage}.entries`, JSON.stringify(entriesLog))
     } catch {
       /* storage unavailable */
     }
-  }, [entriesLog])
+  }, [entriesLog, storage])
   useEffect(() => {
     try {
-      localStorage.setItem('sahasra.maxEntries', String(maxEntries))
-      localStorage.setItem('sahasra.maxHold', String(maxHoldMin))
-      localStorage.setItem('sahasra.premStop', String(premStopPct))
+      localStorage.setItem(`${storage}.maxEntries`, String(maxEntries))
+      localStorage.setItem(`${storage}.maxHold`, String(maxHoldMin))
+      localStorage.setItem(`${storage}.premStop`, String(premStopPct))
     } catch {
       /* storage unavailable */
     }
-  }, [maxEntries, maxHoldMin, premStopPct])
+  }, [maxEntries, maxHoldMin, premStopPct, storage])
 
   const recordEntry = (sym: string) => {
     setEntriesLog((prev) => {
@@ -193,26 +224,26 @@ export function SahasraSection() {
   }
 
   const levelsQ = useQuery({
-    queryKey: ['sahasra-levels'],
-    queryFn: sahasraApi.getLevels,
+    queryKey: ['sahasra-levels', underlying],
+    queryFn: () => sahasraApi.getLevels(underlying),
     refetchInterval: 30000,
   })
   const signalQ = useQuery({
-    queryKey: ['sahasra-signal'],
-    queryFn: sahasraApi.getSignal,
+    queryKey: ['sahasra-signal', underlying],
+    queryFn: () => sahasraApi.getSignal(underlying),
     refetchInterval: 30000,
   })
   const data = signalQ.data?.data ?? levelsQ.data?.data ?? null
 
   const wsSymbols = [
-    { symbol: 'BANKNIFTY', exchange: 'NSE_INDEX' },
+    { symbol: underlying, exchange: 'NSE_INDEX' },
     ...(data?.atm_ce_symbol ? [{ symbol: data.atm_ce_symbol, exchange: 'NFO' }] : []),
     ...(data?.atm_pe_symbol ? [{ symbol: data.atm_pe_symbol, exchange: 'NFO' }] : []),
   ]
   const { data: ticks } = useMarketData({ symbols: wsSymbols, mode: 'LTP' })
   const tickOf = (symbol: string | null, exchange: string) =>
     symbol ? ticks.get(`${exchange}:${symbol}`)?.data?.ltp : undefined
-  const spotLtp = tickOf('BANKNIFTY', 'NSE_INDEX') ?? data?.spot ?? undefined
+  const spotLtp = tickOf(underlying, 'NSE_INDEX') ?? data?.spot ?? undefined
 
   // Book reconciliation (same contract as Low-IV: never exit flat legs).
   const refreshBook = useCallback(
@@ -240,7 +271,7 @@ export function SahasraSection() {
       if (autoPos.estimated && Date.now() - autoPos.entryTs < 60000) return
       setAutoPos(null)
       setLastAutoExitTs(Date.now())
-      showToast.info('Sahasra position is flat in the book — tracking cleared, no exit sent')
+      showToast.info(`${label} position is flat in the book — tracking cleared, no exit sent`)
       return
     }
     const updates: Partial<SahPos> = {}
@@ -269,7 +300,7 @@ export function SahasraSection() {
     if ((data.regime === 'bearish' && side === 'CE') || (data.regime === 'bullish' && side === 'PE'))
       return
     if (maxEntries > 0 && entriesLog.count >= maxEntries) {
-      setOrderError(`Sahasra auto blocked: day cap ${entriesLog.count}/${maxEntries} reached`)
+      setOrderError(`${label} auto blocked: day cap ${entriesLog.count}/${maxEntries} reached`)
       return
     }
     if (autoBook && autoBook.qty !== 0) return // already holding — no double-up
@@ -278,24 +309,24 @@ export function SahasraSection() {
     if (Date.now() - lastAutoExitTs < COOLDOWN_MIN * 60000) return
     const sym = side === 'CE' ? data.atm_ce_symbol : data.atm_pe_symbol
     if (!sym) return
-    if (peerHoldsSymbol(sym, 'sahasra.autoPos')) return // a peer loop holds this leg
+    if (peerHoldsSymbol(sym, `${storage}.autoPos`)) return // a peer loop holds this leg
     const lot = data.atm_lotsize && data.atm_lotsize > 0 ? data.atm_lotsize : 30
     const qty = lots * lot
     const entryLtp = tickOf(sym, 'NFO')
     if (!entryLtp) {
-      setOrderError('Sahasra auto blocked: no live price for the ATM leg yet')
+      setOrderError(`${label} auto blocked: no live price for the ATM leg yet`)
       return
     }
     const entrySpot = spotLtp ?? data.spot ?? 0
     if (!entrySpot) {
-      setOrderError('Sahasra auto blocked: no spot reference for the target level')
+      setOrderError(`${label} auto blocked: no spot reference for the target level`)
       return
     }
     const target = nextLevel(data.ladder ?? [], entrySpot, side)
     firingRef.current = true
     setBusy(true)
     lowIvApi
-      .placeOrder({ symbol: sym, exchange: 'NFO', action: 'BUY', product: 'MIS', quantity: qty, ltp: entryLtp, strategy: 'Sahasra' })
+      .placeOrder({ symbol: sym, exchange: 'NFO', action: 'BUY', product: 'MIS', quantity: qty, ltp: entryLtp, strategy })
       .then((res) => {
         if (res.status === 'success') {
           setAutoPos({
@@ -313,14 +344,14 @@ export function SahasraSection() {
           })
           recordEntry(sym)
           setOrderError(null)
-          showToast.success(`Sahasra auto BUY ${sym} x${qty} (fill confirming…)`)
+          showToast.success(`${label} auto BUY ${sym} x${qty} (fill confirming…)`)
           refreshBook(sym)
         } else {
-          setOrderError(`Sahasra auto rejected: ${res.message ?? 'unknown reason'}`)
+          setOrderError(`${label} auto rejected: ${res.message ?? 'unknown reason'}`)
         }
       })
       .catch((e) => {
-        setOrderError(`Sahasra auto failed: ${e instanceof Error ? e.message : 'unknown error'}`)
+        setOrderError(`${label} auto failed: ${e instanceof Error ? e.message : 'unknown error'}`)
       })
       .finally(() => {
         firingRef.current = false
@@ -362,7 +393,7 @@ export function SahasraSection() {
     }
     if (!reason) return
     if (autoBook && autoBook.qty < 0) {
-      setOrderError('Sahasra exit blocked: book shows a short leg — close it manually')
+      setOrderError(`${label} exit blocked: book shows a short leg — close it manually`)
       return
     }
     if (autoBook && autoBook.qty === 0) return // reconcile clears tracking
@@ -380,20 +411,20 @@ export function SahasraSection() {
         action: 'SELL', // page-auto only ever holds longs
         product: autoPos.product,
         quantity: exitQty,
-        strategy: 'Sahasra',
+        strategy,
       })
       .then((res) => {
         if (res.status === 'success') {
-          showToast.success(`Sahasra exit (${reason}) ${autoPos.symbol} @ ${ltp.toFixed(2)}`)
+          showToast.success(`${label} exit (${reason}) ${autoPos.symbol} @ ${ltp.toFixed(2)}`)
           setAutoPos(null)
           setLastAutoExitTs(Date.now())
           setOrderError(null)
         } else {
-          setOrderError(`Sahasra exit rejected (${reason}): ${res.message ?? 'unknown reason'}`)
+          setOrderError(`${label} exit rejected (${reason}): ${res.message ?? 'unknown reason'}`)
         }
       })
       .catch((e) => {
-        setOrderError(`Sahasra exit failed (${reason}): ${e instanceof Error ? e.message : 'unknown error'}`)
+        setOrderError(`${label} exit failed (${reason}): ${e instanceof Error ? e.message : 'unknown error'}`)
       })
       .finally(() => {
         closingRef.current = false
@@ -401,40 +432,6 @@ export function SahasraSection() {
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticks, autoPos, data?.state])
-
-  const buyLeg = async (side: 'CE' | 'PE') => {
-    const symbol = side === 'CE' ? data?.atm_ce_symbol : data?.atm_pe_symbol
-    if (!symbol) {
-      setOrderError('No ATM contract resolved yet — wait for levels to load')
-      return
-    }
-    setBusy(true)
-    try {
-      const lot = data?.atm_lotsize && data.atm_lotsize > 0 ? data.atm_lotsize : 30
-      const res = await lowIvApi.placeOrder({
-        symbol,
-        exchange: 'NFO',
-        action: 'BUY',
-        product: 'MIS',
-        quantity: lots * lot,
-        ltp: tickOf(symbol, 'NFO'),
-        strategy: 'Sahasra',
-      })
-      if (res.status === 'success') {
-        setOrderError(null)
-        showToast.success(`BUY ${symbol} x${lots * lot} placed`)
-      } else {
-        setOrderError(`Order rejected: ${res.message ?? 'unknown reason'}`)
-        showToast.error(res.message ?? 'Order failed')
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Order failed'
-      setOrderError(`Order failed: ${msg}`)
-      showToast.error(msg)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const state = data?.state
   const blocked = data?.regime_blocked && data?.side
@@ -503,23 +500,7 @@ export function SahasraSection() {
               Prem stop %<Input type="number" min={5} max={50} value={premStopPct} onChange={(e) => setPremStopPct(Math.max(5, Math.min(50, Number(e.target.value) || 15)))} />
             </label>
           </div>
-        </div>
-      ) : (
-        autoPos && (
-          <div className="rounded-md border p-3 text-sm">
-            Auto is OFF but a Sahasra position is still open:{' '}
-            <span className="font-mono">{autoPos.symbol}</span> — turn Auto back on to resume exit
-            monitoring, or close it manually below.
-          </div>
-        )
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Manual trade (ATM, MIS)</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center gap-2">
+          <div className="mt-2 flex items-center gap-2 text-xs">
             <Input
               type="number"
               min={1}
@@ -527,35 +508,27 @@ export function SahasraSection() {
               value={lots}
               onChange={(e) => setLots(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
             />
-            <span className="text-xs text-muted-foreground">
+            <span className="text-muted-foreground">
               lots{data?.atm_lotsize ? ` × ${data.atm_lotsize}` : ''}
             </span>
           </div>
-          <div className="text-xs text-muted-foreground">
-            CE {data?.atm_ce_symbol ? (tickOf(data.atm_ce_symbol, 'NFO')?.toFixed(2) ?? '—') : '—'}
-            {' · '}PE {data?.atm_pe_symbol ? (tickOf(data.atm_pe_symbol, 'NFO')?.toFixed(2) ?? '—') : '—'}
+        </div>
+      ) : (
+        autoPos && (
+          <div className="rounded-md border p-3 text-sm">
+            Auto is OFF but a {label} position is still open:{' '}
+            <span className="font-mono">{autoPos.symbol}</span> — turn Auto back on to resume exit
+            monitoring.
           </div>
-          <div className="flex gap-2">
-            <Button className="flex-1" disabled={busy || !data?.atm_ce_symbol} onClick={() => buyLeg('CE')}>
-              BUY CE
-            </Button>
-            <Button
-              className="flex-1"
-              variant="destructive"
-              disabled={busy || !data?.atm_pe_symbol}
-              onClick={() => buyLeg('PE')}
-            >
-              BUY PE
-            </Button>
-          </div>
-          {orderError && (
-            <div className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800">
-              <div className="font-medium">{orderError}</div>
-              {orderHint && <div className="mt-1">Fix: {orderHint}</div>}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        )
+      )}
+
+      {orderError && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800">
+          <div className="font-medium">{orderError}</div>
+          {orderHint && <div className="mt-1">Fix: {orderHint}</div>}
+        </div>
+      )}
 
       <p className="text-xs text-muted-foreground">
         Levels refresh every 30s from the live chain; 15m state uses closed bars only.
