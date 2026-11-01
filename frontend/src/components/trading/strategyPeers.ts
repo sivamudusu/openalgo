@@ -8,7 +8,13 @@
  * nets to confusion in the book. Reads are localStorage-only (no requests).
  */
 
-const PEER_KEYS = ['lowiv.autoPos', 'sahasra.autoPos', 'momentum.autoPos'] as const
+const PEER_KEYS = [
+  'lowiv.autoPos',
+  'sahasra.autoPos',
+  'sahasra.exact.banknifty.pos',
+  'sahasra.exact.nifty.pos',
+  'momentum.autoPos',
+] as const
 
 export function peerHoldsSymbol(symbol: string, selfKey: (typeof PEER_KEYS)[number]): boolean {
   for (const key of PEER_KEYS) {

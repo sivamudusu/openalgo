@@ -12,9 +12,10 @@
  * Low-IV page-auto, which says so where it arms.
  */
 
-import { PANEL_HEADER, PanelShell } from './panelShell'
 import { LowIvSection } from './LowIvSection'
 import { MomentumSection } from './MomentumSection'
+import { PANEL_HEADER, PanelShell } from './panelShell'
+import { SahasraExactSection } from './SahasraExactSection'
 import { SahasraSection } from './SahasraSection'
 
 export function SignalsPanel() {
@@ -27,6 +28,10 @@ export function SignalsPanel() {
         <section aria-label="Low-IV strategy">
           <h3 className="mb-2 text-sm font-semibold">Low-IV · BANKNIFTY</h3>
           <LowIvSection />
+        </section>
+        <section aria-label="Sahasra exact assisted model">
+          <h3 className="mb-2 text-sm font-semibold">Sahasra exact · manual</h3>
+          <SahasraExactSection />
         </section>
         <section aria-label="Sahasra OI model">
           <h3 className="mb-2 text-sm font-semibold">Sahasra · OI model</h3>

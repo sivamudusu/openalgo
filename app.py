@@ -97,6 +97,7 @@ from blueprints.react_app import (  # Import React frontend blueprint
     serve_react_app,
 )
 from blueprints.sahasra import sahasra_bp  # Sahasra OI-model monitoring blueprint
+from blueprints.sahasra_exact import sahasra_exact_bp  # Sahasra exact assisted panel blueprint
 from blueprints.sandbox import sandbox_bp  # Import the sandbox blueprint
 from blueprints.scalping import scalping_bp  # Import the Scalping terminal blueprint
 from blueprints.search import search_bp
@@ -131,6 +132,7 @@ from database.historify_db import init_database as ensure_historify_tables_exist
 from database.latency_db import init_latency_db as ensure_latency_tables_exists
 from database.leverage_db import init_db as ensure_leverage_tables_exists
 from database.low_iv_db import init_db as ensure_low_iv_tables_exists
+from database.sahasra_exact_db import init_db as ensure_sahasra_exact_tables_exists
 from database.sandbox_db import init_db as ensure_sandbox_tables_exists
 from database.scalping_db import init_db as ensure_scalping_tables_exists
 from database.settings_db import init_db as ensure_settings_tables_exists
@@ -339,6 +341,7 @@ def create_app():
     app.register_blueprint(scalping_bp)  # Register Scalping terminal blueprint
     app.register_blueprint(low_iv_bp)  # Register Low-IV BANKNIFTY terminal blueprint
     app.register_blueprint(sahasra_bp)  # Register Sahasra OI-model blueprint
+    app.register_blueprint(sahasra_exact_bp)  # Register Sahasra exact panel blueprint
     app.register_blueprint(watchlist_bp)  # Register charting watchlist blueprint
     app.register_blueprint(alerts_bp)  # Register chart alert log blueprint
     app.register_blueprint(oitracker_bp)  # Register OI tracker blueprint
@@ -768,6 +771,7 @@ def setup_environment(app):
                 ("Flow DB", ensure_flow_tables_exists),
                 ("Scalping DB", ensure_scalping_tables_exists),
                 ("LowIV DB", ensure_low_iv_tables_exists),
+                ("Sahasra Exact DB", ensure_sahasra_exact_tables_exists),
                 ("Watchlist DB", ensure_watchlist_tables_exists),
                 ("Alert Log DB", ensure_alert_log_tables_exists),
                 ("Leverage DB", ensure_leverage_tables_exists),
@@ -888,6 +892,14 @@ def setup_environment(app):
                 logger.debug("Historify scheduler initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize Historify scheduler: {e}")
+
+            try:
+                from services.sahasra_exact_snapshot_service import init_scheduler
+
+                init_scheduler()
+                logger.debug("Sahasra exact snapshot scheduler initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize Sahasra exact scheduler: {e}")
 
             try:
                 # Multi-leg options strategies with end-to-end risk management.

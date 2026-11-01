@@ -49,6 +49,7 @@ SCOPED_SESSION_MODULES = [
     ("database.chart_prefs_db", "db_session"),
     ("database.chartink_db", "db_session"),
     ("database.flow_db", "db_session"),
+    ("database.sahasra_exact_db", "db_session"),
     ("database.scalping_db", "db_session"),
     ("database.watchlist_db", "db_session"),
     ("database.alert_log_db", "db_session"),

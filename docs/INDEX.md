@@ -49,6 +49,7 @@ need → drill into the specific file. Don't load everything at once.
 | WhatsApp alerts | [whatsapp.md](whatsapp.md) |
 | Telegram chart rendering | [telegram-chart-rendering.md](telegram-chart-rendering.md) |
 | Health monitoring | [HEALTH_MONITORING_IMPLEMENTATION.md](HEALTH_MONITORING_IMPLEMENTATION.md) · [HEALTH_MONITOR_REACT_FRONTEND.md](HEALTH_MONITOR_REACT_FRONTEND.md) |
+| Sahasra exact model (assisted panel) | [plans/2026-10-29-sahasra-exact-model.md](plans/2026-10-29-sahasra-exact-model.md) |
 
 ## Architecture, design & specs (contributors)
 

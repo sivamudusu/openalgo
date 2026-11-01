@@ -92,6 +92,7 @@ MIGRATIONS = [
     ("migrate_agent_voice.py", "Agent Voice Surface Settings"),
     ("migrate_agent_voice_phrase_removal.py", "Agent Voice Approval Phrase Removal"),
     ("migrate_alert_log.py", "Chart Alert Log (/trading alerts history)"),
+    ("migrate_sahasra_exact.py", "Sahasra Exact Model Snapshots and Context"),
 ]
 
 # Legacy migrations historically used non-zero exits for best-effort warnings,
