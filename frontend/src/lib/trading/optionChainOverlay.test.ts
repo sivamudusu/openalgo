@@ -1,6 +1,7 @@
 import type { PrimitiveRenderContext } from 'openalgo-charts'
 import { describe, expect, it, vi } from 'vitest'
 import type { OptionChainResponse, OptionData, OptionStrike } from '@/types/option-chain'
+import type { OiVelocityData } from './oiVelocity'
 import {
   DEFAULT_OPTION_CHAIN_OVERLAY_OPTIONS,
   formatOverlayStrike,
@@ -47,6 +48,71 @@ const chain = (): OptionChainResponse => ({
   expiry_date: '30OCT26',
   atm_strike: 22_750,
   chain: [row(22_700, 1000, 5000), row(22_750, 3000, 2000), row(22_800, 6000, 1000)],
+})
+
+const velocity = (): OiVelocityData => ({
+  windowMinutes: 15,
+  samples: 30,
+  expectedSamples: 30,
+  windowReady: true,
+  elapsedMs: 870_000,
+  pressure: 0.32,
+  netDelta: 1_200,
+  netVelocity: 80,
+  pcrChange: 0.04,
+  pcrVelocity: 0.003,
+  spotChange: 20,
+  spotVelocity: 1.33,
+  levels: [
+    {
+      strike: 22_700,
+      ceDelta: 100,
+      peDelta: 600,
+      ceVelocity: 6.67,
+      peVelocity: 40,
+      netDelta: 500,
+      netVelocity: 33.33,
+      pressure: 0.08,
+    },
+    {
+      strike: 22_750,
+      ceDelta: -200,
+      peDelta: 400,
+      ceVelocity: -13.33,
+      peVelocity: 26.67,
+      netDelta: 600,
+      netVelocity: 40,
+      pressure: 0.2,
+    },
+    {
+      strike: 22_800,
+      ceDelta: -100,
+      peDelta: -200,
+      ceVelocity: -6.67,
+      peVelocity: -13.33,
+      netDelta: -300,
+      netVelocity: -20,
+      pressure: -0.04,
+    },
+  ],
+  nextSupport: {
+    strike: 22_700,
+    side: 'support',
+    score: 68,
+    label: 'building',
+    pressure: -0.32,
+    levelChange: 600,
+    distance: 50,
+  },
+  nextResistance: {
+    strike: 22_800,
+    side: 'resistance',
+    score: 75,
+    label: 'elevated',
+    pressure: 0.32,
+    levelChange: -100,
+    distance: 50,
+  },
 })
 
 const theme = {
@@ -258,6 +324,63 @@ describe('overlaySignature', () => {
       overlaySignature(data, { ...DEFAULT_OPTION_CHAIN_OVERLAY_OPTIONS, showValues: true })
     ).not.toBe(base)
     expect(overlaySignature(null, DEFAULT_OPTION_CHAIN_OVERLAY_OPTIONS)).toBe('')
+  })
+})
+
+describe('OI velocity overlay', () => {
+  it('repaints for velocity only when the velocity display is on', () => {
+    const base = overlayDataFromChain(chain(), 'oi')
+    const withVelocity = { ...base, velocity: velocity() }
+    const off = DEFAULT_OPTION_CHAIN_OVERLAY_OPTIONS
+    const on = { ...off, showVelocity: true }
+
+    expect(overlaySignature(withVelocity, off)).toBe(overlaySignature(base, off))
+    expect(overlaySignature(withVelocity, on)).not.toBe(overlaySignature(base, on))
+    expect(overlaySignature(withVelocity, { ...on, metric: 'ltp' })).not.toBe(
+      overlaySignature(withVelocity, on)
+    )
+  })
+
+  it('draws pressure ticks, break watch lines and the 15-minute footer', () => {
+    const paint = canvas()
+    const overlay = new OptionChainOverlay()
+    overlay.setData(
+      { ...overlayDataFromChain(chain(), 'oi'), velocity: velocity() },
+      { ...DEFAULT_OPTION_CHAIN_OVERLAY_OPTIONS, showVelocity: true }
+    )
+    overlay.draw(paint.ctx, paint.rc)
+
+    const pressureTicks = paint.fills.filter((fill) => fill.width === 3 * paint.dpr)
+    expect(pressureTicks).toHaveLength(3)
+    expect(pressureTicks.some((fill) => fill.color === '#10b981')).toBe(true)
+    expect(pressureTicks.some((fill) => fill.color === '#f43f5e')).toBe(true)
+
+    expect(paint.strokes.map((stroke) => stroke.color)).toContain('#f59e0b')
+    expect(paint.textCalls.map((call) => call.text)).toEqual(
+      expect.arrayContaining(['R next 75', 'S next 68', 'OI 15m +1.2K · pressure +0.32'])
+    )
+  })
+
+  it('shows the warm-up state instead of a break watch before 15 minutes', () => {
+    const paint = canvas()
+    const overlay = new OptionChainOverlay()
+    overlay.setData(
+      {
+        ...overlayDataFromChain(chain(), 'oi'),
+        velocity: {
+          ...velocity(),
+          samples: 3,
+          windowReady: false,
+          nextSupport: null,
+          nextResistance: null,
+        },
+      },
+      { ...DEFAULT_OPTION_CHAIN_OVERLAY_OPTIONS, showVelocity: true }
+    )
+    overlay.draw(paint.ctx, paint.rc)
+
+    expect(paint.strokes.map((stroke) => stroke.color)).not.toContain('#f59e0b')
+    expect(paint.textCalls.map((call) => call.text)).toContain('OI 15m warming 3/30')
   })
 })
 

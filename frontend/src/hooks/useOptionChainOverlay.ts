@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { scalpingApi } from '@/api/scalping'
 import type { OptionChainMetric } from '@/lib/optionChainMetrics'
+import type { OiVelocityData } from '@/lib/trading/oiVelocity'
 import { type OptionChainOverlayData, overlayDataFromChain } from '@/lib/trading/optionChainOverlay'
 import {
   type ChartInstrument,
@@ -10,6 +11,7 @@ import {
   optionChainCandidates,
 } from '@/lib/trading/optionChainUnderlying'
 import type { OptionChainResponse } from '@/types/option-chain'
+import { useOiVelocity } from './useOiVelocity'
 import { useOptionChainLive } from './useOptionChainLive'
 
 export type OptionChainOverlayStatus = 'idle' | 'loading' | 'ready' | 'unsupported' | 'unavailable'
@@ -35,6 +37,7 @@ export interface OptionChainOverlayState {
   setExpiry: (expiry: string) => void
   chain: OptionChainResponse | null
   data: OptionChainOverlayData | null
+  velocity: OiVelocityData | null
   isLoading: boolean
   isStreaming: boolean
   isPaused: boolean
@@ -189,10 +192,18 @@ export function useOptionChainOverlay({
     }
   )
 
-  const data = useMemo(
-    () => (live.data ? overlayDataFromChain(live.data, metric) : null),
-    [live.data, metric]
-  )
+  const { velocity } = useOiVelocity({
+    enabled: active && Boolean(identity && expiry),
+    chain: live.polledData,
+    lastPollUpdate: live.lastPollUpdate,
+    strikeCount,
+  })
+
+  const data = useMemo(() => {
+    if (!live.data) return null
+    const base = overlayDataFromChain(live.data, metric)
+    return velocity ? { ...base, velocity } : base
+  }, [live.data, metric, velocity])
 
   const status: OptionChainOverlayStatus =
     resolveStatus === 'unsupported'
@@ -241,6 +252,7 @@ export function useOptionChainOverlay({
     setExpiry,
     chain: live.data,
     data,
+    velocity,
     isLoading,
     isStreaming: live.isStreaming,
     isPaused: live.isPaused,

@@ -6,6 +6,13 @@ import {
   optionChainMetricValue,
 } from '@/lib/optionChainMetrics'
 import type { OptionChainResponse } from '@/types/option-chain'
+import {
+  formatSignedCompact,
+  formatSignedDecimal,
+  type OiBreakWatch,
+  type OiVelocityData,
+  type OiVelocityLevel,
+} from './oiVelocity'
 
 /** One strike row, reduced to what the overlay draws. */
 export interface OptionChainOverlayLevel {
@@ -27,26 +34,31 @@ export interface OptionChainOverlayData {
   levels: OptionChainOverlayLevel[]
   maxCeStrike: number | null
   maxPeStrike: number | null
+  velocity?: OiVelocityData | null
 }
 
 export interface OptionChainOverlayOptions {
   metric: OptionChainMetric
   showValues: boolean
   showLevels: boolean
+  showVelocity: boolean
 }
 
 export const DEFAULT_OPTION_CHAIN_OVERLAY_OPTIONS: OptionChainOverlayOptions = {
   metric: 'oi',
   showValues: false,
   showLevels: true,
+  showVelocity: false,
 }
 
 const CE_COLOR = '#10b981'
 const PE_COLOR = '#f43f5e'
+const BREAK_COLOR = '#f59e0b'
 const FONT = '10px ui-sans-serif, system-ui, -apple-system, sans-serif'
 const RIGHT_PAD = 6
 const MIN_BAR_WIDTH = 60
 const MAX_BAR_WIDTH = 200
+const BREAK_SCORE_DRAW_THRESHOLD = 58
 
 /** The chart's chain as the primitive reads it. */
 export function overlayDataFromChain(
@@ -135,6 +147,23 @@ export function overlaySignature(
   const levels = data.levels
     .map((level) => `${level.strike}:${level.ceValue}:${level.peValue}:${level.ceOi}:${level.peOi}`)
     .join(',')
+  const velocity =
+    options.showVelocity && data.velocity
+      ? [
+          data.velocity.samples,
+          data.velocity.windowReady,
+          data.velocity.pressure.toFixed(4),
+          data.velocity.pcrChange.toFixed(4),
+          data.velocity.netDelta,
+          data.velocity.nextSupport?.strike ?? '',
+          data.velocity.nextSupport?.score ?? '',
+          data.velocity.nextResistance?.strike ?? '',
+          data.velocity.nextResistance?.score ?? '',
+          data.velocity.levels
+            .map((level) => `${level.strike}:${level.netDelta}:${level.netVelocity.toFixed(2)}`)
+            .join(','),
+        ].join(';')
+      : ''
   return [
     data.underlying,
     data.expiry,
@@ -145,7 +174,9 @@ export function overlaySignature(
     options.metric,
     options.showValues,
     options.showLevels,
+    options.showVelocity,
     levels,
+    velocity,
   ].join('|')
 }
 
@@ -225,6 +256,14 @@ export class OptionChainOverlay implements IPrimitive {
     )
     const textColor = rc.theme.axisText
     const metric = metricLabel(this.options.metric)
+    const velocity = this.options.showVelocity ? data.velocity : null
+    const velocityByStrike = new Map<number, OiVelocityLevel>(
+      velocity?.levels.map((level) => [level.strike, level]) ?? []
+    )
+    const maxPressureDelta = Math.max(
+      1,
+      ...visible.map((level) => Math.abs(velocityByStrike.get(level.strike)?.netDelta ?? 0))
+    )
 
     ctx.save()
     ctx.scale(rc.dpr, rc.dpr)
@@ -244,6 +283,15 @@ export class OptionChainOverlay implements IPrimitive {
       this.drawLevel(ctx, rc, data.maxPeStrike, PE_COLOR, 'S')
     }
 
+    if (velocity?.windowReady) {
+      if (velocity.nextResistance && velocity.nextResistance.score >= BREAK_SCORE_DRAW_THRESHOLD) {
+        this.drawBreakWatch(ctx, rc, velocity.nextResistance, 'R next')
+      }
+      if (velocity.nextSupport && velocity.nextSupport.score >= BREAK_SCORE_DRAW_THRESHOLD) {
+        this.drawBreakWatch(ctx, rc, velocity.nextSupport, 'S next')
+      }
+    }
+
     ctx.globalAlpha = 0.78
     for (const level of visible) {
       const y = rc.priceScale.priceToY(level.strike)
@@ -258,6 +306,20 @@ export class OptionChainOverlay implements IPrimitive {
       if (peWidth > 0) {
         ctx.fillStyle = PE_COLOR
         ctx.fillRect(rightEdge - peWidth, peY, peWidth, barHeight)
+      }
+    }
+
+    if (velocity && velocity.samples >= 2) {
+      const tickX = Math.max(4, rightEdge - maxBarWidth - 8)
+      const tickHeight = Math.max(2, Math.min(8, spacing > 0 ? spacing * 0.35 : 4))
+      ctx.globalAlpha = 0.65
+      for (const level of visible) {
+        const change = velocityByStrike.get(level.strike)
+        if (!change || change.netDelta === 0) continue
+        const y = rc.priceScale.priceToY(level.strike)
+        const height = (Math.abs(change.netDelta) / maxPressureDelta) * tickHeight
+        ctx.fillStyle = change.ceDelta > change.peDelta ? CE_COLOR : PE_COLOR
+        ctx.fillRect(tickX, y - height / 2, 3, Math.max(2, height))
       }
     }
 
@@ -304,6 +366,12 @@ export class OptionChainOverlay implements IPrimitive {
     ctx.globalAlpha = 0.7
     ctx.fillStyle = textColor
     ctx.textBaseline = 'bottom'
+    if (velocity) {
+      const status = velocity.windowReady
+        ? `OI ${velocity.windowMinutes}m ${formatSignedCompact(velocity.netDelta)} · pressure ${formatSignedDecimal(velocity.pressure)}`
+        : `OI ${velocity.windowMinutes}m warming ${velocity.samples}/${velocity.expectedSamples}`
+      ctx.fillText(status, 6, rc.plotHeight - 30)
+    }
     ctx.fillText(`${data.underlying} · ${data.expiry} · PCR ${pcr}`, 6, rc.plotHeight - 6)
 
     ctx.restore()
@@ -343,6 +411,42 @@ export class OptionChainOverlay implements IPrimitive {
     ctx.globalAlpha = 1
     ctx.fillStyle = color
     ctx.fillText(text, 4, labelY)
+    ctx.restore()
+  }
+
+  private drawBreakWatch(
+    ctx: CanvasRenderingContext2D,
+    rc: PrimitiveRenderContext,
+    watch: OiBreakWatch,
+    label: string
+  ): void {
+    const y = rc.priceScale.priceToY(watch.strike)
+    if (!Number.isFinite(y) || y < -8 || y > rc.plotHeight + 8) return
+
+    ctx.save()
+    ctx.globalAlpha = 0.65
+    ctx.strokeStyle = BREAK_COLOR
+    ctx.lineWidth = 1
+    ctx.setLineDash([2, 3])
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(rc.plotWidth, y)
+    ctx.stroke()
+
+    ctx.setLineDash([])
+    ctx.font = FONT
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'bottom'
+    const text = `${label} ${watch.score}`
+    const width = ctx.measureText(text).width
+    const labelY = Math.max(11, y - 3)
+    const x = rc.plotWidth - 4
+    ctx.globalAlpha = 0.75
+    ctx.fillStyle = rc.theme.background
+    ctx.fillRect(x - width - 4, labelY - 11, width + 4, 12)
+    ctx.globalAlpha = 1
+    ctx.fillStyle = BREAK_COLOR
+    ctx.fillText(text, x, labelY)
     ctx.restore()
   }
 }
