@@ -50,7 +50,7 @@ VALID_STRATEGIES = {
     "SahasraNifty",
     "Momentum",
     "MomentumNifty",
-    "Video",
+    "Manual",
 }
 UNDERLYING = LOW_IV_DEFAULTS["underlying"]
 INDEX_EXCHANGE = LOW_IV_DEFAULTS["index_exchange"]

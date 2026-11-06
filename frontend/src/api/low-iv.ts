@@ -7,7 +7,7 @@ export type LowIVStrategyTag =
   | 'SahasraNifty'
   | 'Momentum'
   | 'MomentumNifty'
-  | 'Video'
+  | 'Manual'
 
 export interface LowIVConfig {
   underlying: string
