@@ -23,6 +23,7 @@ export interface OptionChainOverlaySettings {
   strikeCount: number
   showValues: boolean
   showLevels: boolean
+  showVelocity: boolean
   /** The expiry the trader chose, or null for the nearest. */
   expiry: string | null
 }
@@ -32,6 +33,7 @@ const DEFAULT_SETTINGS: OptionChainOverlaySettings = {
   strikeCount: 10,
   showValues: false,
   showLevels: true,
+  showVelocity: false,
   expiry: null,
 }
 
@@ -71,6 +73,7 @@ function readStored(paneId: string): StoredOverlay {
         strikeCount,
         showValues: settings.showValues === true,
         showLevels: settings.showLevels !== false,
+        showVelocity: settings.showVelocity === true,
         expiry:
           typeof settings.expiry === 'string' && settings.expiry.length > 0
             ? settings.expiry
@@ -169,8 +172,14 @@ export function OptionChainOverlayProvider({
       metric: stored.settings.metric,
       showValues: stored.settings.showValues,
       showLevels: stored.settings.showLevels,
+      showVelocity: stored.settings.showVelocity,
     }),
-    [stored.settings.metric, stored.settings.showValues, stored.settings.showLevels]
+    [
+      stored.settings.metric,
+      stored.settings.showValues,
+      stored.settings.showLevels,
+      stored.settings.showVelocity,
+    ]
   )
 
   useEffect(() => {

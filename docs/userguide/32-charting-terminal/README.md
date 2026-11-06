@@ -94,6 +94,16 @@ Prices stream over the WebSocket feed. Open interest and volume refresh every
 30 seconds; the Greeks are recomputed from the streaming prices between those
 refreshes. The overlay is display only: clicking a bar does not open an order.
 
+**OI velocity** uses those 30-second open-interest snapshots over the last 15
+minutes. It draws a small pressure tick beside each strike: green means call
+open interest is rising faster than put open interest there, red means the
+reverse. When the evidence is strong it marks the next call or put open-interest
+peak as a break watch. The menu shows the warm-up progress, the net open-interest
+change, the pressure reading and the score for the next resistance and support.
+The score is a heuristic, not a prediction: it combines open-interest change,
+the change at the level, price movement, proximity and PCR movement. A reload or
+a hidden tab restarts the 15-minute window.
+
 ## Saving Images and Data
 
 Open the selected chart's camera menu and choose **Download image**, **Copy image**

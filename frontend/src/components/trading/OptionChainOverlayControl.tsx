@@ -16,6 +16,11 @@ import {
   OPTION_CHAIN_METRICS,
   type OptionChainMetric,
 } from '@/lib/optionChainMetrics'
+import {
+  formatSignedCompact,
+  formatSignedDecimal,
+  type OiBreakWatch,
+} from '@/lib/trading/oiVelocity'
 import { cn } from '@/lib/utils'
 import { useOptionChainOverlayContext } from './OptionChainOverlayProvider'
 
@@ -36,9 +41,17 @@ function stateLine({
   lastUpdate: Date | null
 }): string {
   if (isPaused) return 'Paused while this tab is hidden.'
-  if (isStreaming) return 'Live prices. Open interest refreshes every 30 seconds.'
+  if (isStreaming) {
+    return 'Live prices. Open interest refreshes every 30 seconds; velocity uses the last 15 minutes.'
+  }
   if (lastUpdate) return `Not streaming. Last update ${lastUpdate.toLocaleTimeString()}.`
   return 'Waiting for the first chain.'
+}
+
+function breakLine(label: string, watch: OiBreakWatch | null): string {
+  if (!watch) return `${label}: no level`
+  if (watch.label === 'warming') return `${label}: warming up`
+  return `${label} ${formatSpot(watch.strike)}: ${watch.score}/100 ${watch.label}`
 }
 
 /**
@@ -214,6 +227,37 @@ export function OptionChainOverlayControl({ menuHost }: { menuHost?: HTMLElement
                 aria-label="Show support and resistance lines"
               />
             </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs">OI velocity (15m)</span>
+              <Switch
+                checked={settings.showVelocity}
+                onCheckedChange={(value) => setSettings({ showVelocity: value })}
+                aria-label="Show 15-minute open interest velocity and break watch"
+              />
+            </div>
+
+            {settings.showVelocity && (
+              <div className="space-y-1 rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground">
+                {state.velocity ? (
+                  <>
+                    <p>
+                      {state.velocity.windowReady
+                        ? `OI ${state.velocity.windowMinutes}m ${formatSignedCompact(state.velocity.netDelta)} net · pressure ${formatSignedDecimal(state.velocity.pressure)}`
+                        : `Warming up ${state.velocity.samples}/${state.velocity.expectedSamples} polls`}
+                    </p>
+                    {state.velocity.windowReady && (
+                      <>
+                        <p>{breakLine('Next R', state.velocity.nextResistance)}</p>
+                        <p>{breakLine('Next S', state.velocity.nextSupport)}</p>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <p>Waiting for the first OI snapshot.</p>
+                )}
+              </div>
+            )}
           </div>
         )}
 
