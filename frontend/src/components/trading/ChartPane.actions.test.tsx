@@ -33,6 +33,15 @@ vi.mock('@/utils/toast', () => ({
   showToast: { success: fake.toast, error: fake.toast, info: fake.toast },
 }))
 vi.mock('@/api/trading', () => ({ tradingApi: fake.api }))
+vi.mock('@/api/visualBracket', () => ({
+  visualBracketApi: {
+    list: vi.fn(async () => []),
+    place: vi.fn(),
+    modify: vi.fn(),
+    cancel: vi.fn(),
+    exit: vi.fn(),
+  },
+}))
 // The ticket itself is tested on its own; here only what it was opened with.
 vi.mock('./PlaceOrderDialog', () => ({
   PlaceOrderDialog: (p: Record<string, unknown>) => (
@@ -144,7 +153,11 @@ function bridgeWith(book: { orders: DockOrder[]; positions: DockPosition[] }) {
   return bridge
 }
 
-async function mount(bridge: ChartOrderBridge | null, appMode: 'live' | 'analyzer' = 'live') {
+async function mount(
+  bridge: ChartOrderBridge | null,
+  appMode: 'live' | 'analyzer' = 'live',
+  symbol: SymbolView = NIFTY_FUT
+) {
   if (bridge) bridge.actions.appMode = appMode
   const view = render(
     <ChartOrderBridgeContext.Provider value={{ current: bridge }}>
@@ -153,8 +166,21 @@ async function mount(bridge: ChartOrderBridge | null, appMode: 'live' | 'analyze
   )
   const owner = fake.owners[0]
   await act(async () => owner.resolve())
-  act(() => owner.options.callbacks.onSymbolLoaded(NIFTY_FUT))
+  act(() => owner.options.callbacks.onSymbolLoaded(symbol))
   return { view, owner }
+}
+
+const NIFTY_INDEX: SymbolView = {
+  symbol: 'NIFTY',
+  exchange: 'NSE_INDEX',
+  name: 'NIFTY',
+  lots: false,
+  lotsize: 1,
+  tick: 0.05,
+  freezeQty: 1,
+  quoteOnly: true,
+  productOptions: [],
+  product: '',
 }
 
 beforeEach(() => {
@@ -166,6 +192,11 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('order rows in the chart menu', () => {
+  it('offers the visual order tool on a quote-only index chart', async () => {
+    const { view } = await mount(null, 'live', NIFTY_INDEX)
+    expect(view.getByRole('button', { name: 'Visual order' })).toBeInTheDocument()
+  })
+
   it('shows none when the symbol is flat and has no working order', async () => {
     const bridge = bridgeWith({
       orders: [order({ order_status: 'complete' }), order({ symbol: 'OTHER' })],

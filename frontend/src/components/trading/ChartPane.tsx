@@ -477,7 +477,7 @@ export function ChartPane({
   const activeVisualRef = useRef<VisualBracketView | null>(null)
   const visualKeyRef = useRef('')
   const visualSupported = Boolean(
-    sym && !sym.quoteOnly && !sym.synthetic && isVisualUnderlying(sym.symbol, sym.exchange)
+    sym && !sym.synthetic && isVisualUnderlying(sym.symbol, sym.exchange)
   )
   const { brackets: visualBrackets, refresh: refreshVisualBrackets } = useVisualBrackets(
     ready && visualSupported
