@@ -2,7 +2,8 @@
  * Strategy signals for the charting terminal: manual trading first, then the
  * hosted models side by side, each monitoring and each able to trade from here.
  *
- * - **Manual** buys the at-the-money call or put on BANKNIFTY or NIFTY.
+ * - **Manual** buys the at-the-money call or put on BANKNIFTY or NIFTY. The
+ *   order carries an index target and stop watched by the server.
  * - **Sahasra** reads positioning: OI support/resistance, PCR regime, and the
  *   15m bar's state against the levels.
  * - **Momentum** is the inside-range experiment run on the same levels.
@@ -18,7 +19,11 @@ import { ManualSection } from './ManualSection'
 import { MomentumSection } from './MomentumSection'
 import { SahasraSection } from './SahasraSection'
 
-export function SignalsPanel() {
+export function SignalsPanel({
+  onShowChart,
+}: {
+  onShowChart?: (symbol: string, exchange: string) => void
+}) {
   return (
     <PanelShell id="oa-panel-signals" label="Strategy signals" storageKey="trading.panel.signals">
       <div className={PANEL_HEADER}>
@@ -27,7 +32,7 @@ export function SignalsPanel() {
       <div className="no-scrollbar flex-1 space-y-5 overflow-y-auto p-2">
         <section aria-label="Manual ATM trading">
           <h3 className="mb-2 text-sm font-semibold">Manual · ATM</h3>
-          <ManualSection />
+          <ManualSection onShowChart={onShowChart} />
         </section>
         <section aria-label="Sahasra OI model BANKNIFTY">
           <h3 className="mb-2 text-sm font-semibold">Sahasra · BANKNIFTY</h3>

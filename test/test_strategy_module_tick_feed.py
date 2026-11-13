@@ -862,3 +862,107 @@ def test_ticks_are_applied_even_with_no_price_hook_registered():
     feed._drain_ticks_once()
 
     assert feed.get_ltp("RELIANCE", "NSE") == 1287.5
+
+
+# ---------------------------------------------------------------------------
+# Additional price consumers and owner-keyed subscriptions
+#
+# The visual bracket engine shares this feed. It must be able to observe prices
+# and hold a symbol without stealing the strategy module's single hook.
+# ---------------------------------------------------------------------------
+
+
+def test_extra_price_hook_runs_beside_the_legacy_hook():
+    feed, _clock, _ws, _quotes = make_feed()
+    feed.add_subscription("visual_bracket:1", [("RELIANCE", "NSE")])
+    legacy = []
+    extra = []
+    feed.set_on_price(lambda s, e, p: legacy.append((s, e, p)))
+    feed.add_price_hook(lambda s, e, p: extra.append((s, e, p)))
+
+    feed.on_tick(tick("RELIANCE", "NSE", 1287.5))
+    feed._drain_ticks_once()
+
+    assert legacy == [("RELIANCE", "NSE", 1287.5)]
+    assert extra == [("RELIANCE", "NSE", 1287.5)]
+
+
+def test_removing_an_extra_hook_leaves_the_legacy_hook():
+    feed, _clock, _ws, _quotes = make_feed()
+    feed.add_subscription("visual_bracket:1", [("RELIANCE", "NSE")])
+    legacy = []
+    extra = []
+    feed.set_on_price(lambda s, e, p: legacy.append((s, e, p)))
+    unsubscribe = feed.add_price_hook(lambda s, e, p: extra.append((s, e, p)))
+
+    unsubscribe()
+    feed.on_tick(tick("RELIANCE", "NSE", 1287.5))
+    feed._drain_ticks_once()
+
+    assert legacy == [("RELIANCE", "NSE", 1287.5)]
+    assert extra == []
+
+
+def test_adding_the_same_extra_hook_twice_does_not_duplicate_it():
+    feed, _clock, _ws, _quotes = make_feed()
+    feed.add_subscription("visual_bracket:1", [("RELIANCE", "NSE")])
+    seen = []
+
+    def hook(symbol, _exchange, _price):
+        seen.append(symbol)
+
+    feed.add_price_hook(hook)
+    feed.add_price_hook(hook)
+    feed.on_tick(tick("RELIANCE", "NSE", 1287.5))
+    feed._drain_ticks_once()
+
+    assert seen == ["RELIANCE"]
+
+
+def test_a_raising_extra_hook_does_not_cost_the_legacy_hook():
+    feed, _clock, _ws, _quotes = make_feed()
+    feed.add_subscription("visual_bracket:1", [("RELIANCE", "NSE")])
+    legacy = []
+    feed.set_on_price(lambda s, e, p: legacy.append((s, e, p)))
+    feed.add_price_hook(lambda *_: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    feed.on_tick(tick("RELIANCE", "NSE", 1287.5))
+    feed._drain_ticks_once()
+
+    assert legacy == [("RELIANCE", "NSE", 1287.5)]
+
+
+def test_string_owner_and_run_share_one_symbol_subscription():
+    feed, _clock, ws, _quotes = make_feed()
+    feed.add_run_subscriptions(1, [("RELIANCE", "NSE")])
+    first = len(ws.subscribe_calls)
+
+    feed.add_subscription("visual_bracket:1", [("RELIANCE", "NSE")])
+
+    assert len(ws.subscribe_calls) == first
+    feed.remove_subscription("visual_bracket:1")
+    assert feed.get_ltp("RELIANCE", "NSE") is None
+    assert len(ws.unsubscribe_calls) == 0
+
+
+def test_removing_one_owner_keeps_a_symbol_another_still_holds():
+    feed, _clock, ws, _quotes = make_feed()
+    feed.add_run_subscriptions(1, [("RELIANCE", "NSE")])
+    feed.add_subscription("visual_bracket:1", [("RELIANCE", "NSE")])
+
+    feed.remove_subscription("visual_bracket:1")
+
+    assert len(ws.unsubscribe_calls) == 0
+    feed.on_tick(tick("RELIANCE", "NSE", 1287.5))
+    feed._drain_ticks_once()
+    assert feed.get_ltp("RELIANCE", "NSE") == 1287.5
+
+
+def test_stop_clears_extra_price_hooks():
+    feed, _clock, _ws, _quotes = make_feed()
+    seen = []
+    feed.add_price_hook(lambda s, e, p: seen.append((s, e, p)))
+
+    feed.stop()
+
+    assert feed._price_hooks == []

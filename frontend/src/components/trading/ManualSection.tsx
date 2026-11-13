@@ -2,80 +2,56 @@
  * Manual ATM trading for the /trading signals rail.
  *
  * The trader picks BANKNIFTY or NIFTY, then buys the at-the-money call or put
- * as a market MIS order. The ATM leg comes from the same signal endpoint the
- * models read, so the strike follows spot between refreshes.
+ * as a market MIS order. The order is a visual bracket underneath: its target
+ * and stop are index levels, the server watches the index, and the same
+ * draggable lines appear on the index chart.
  *
- * Orders carry strategy=Manual so they are attributed separately from the
- * automated models. The rows below are a local reminder, not a book; the
- * Positions page remains the source of truth.
+ * Orders carry strategy=Manual, separate from the visual tool's own orders, so
+ * their P&L is attributed apart. The rows below come from the bracket list, so
+ * they survive a reload and are the same state the server is watching.
  */
 
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
-import { lowIvApi } from '@/api/low-iv'
+import { useMemo, useState } from 'react'
 import { sahasraApi, type SahasraUnderlying } from '@/api/sahasra'
+import { visualBracketApi } from '@/api/visualBracket'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { useMarketData } from '@/hooks/useMarketData'
+import { useVisualBrackets } from '@/hooks/useVisualBrackets'
+import {
+  biasFor,
+  manualBracketLevels,
+  statusLabel,
+  type VisualBracketView,
+} from '@/lib/trading/visualBracket'
 import { showToast } from '@/utils/toast'
-import { hintFor } from './LowIvSection'
 
 type Side = 'CE' | 'PE'
 
-interface ManualPosition {
-  id: string
-  symbol: string
-  exchange: string
-  underlying: SahasraUnderlying
-  side: Side
-  qty: number
-  entry: number | null
-  ts: number
-}
-
-const STORAGE_KEY = 'manual.positions.v1'
 const UNDERLYINGS: SahasraUnderlying[] = ['BANKNIFTY', 'NIFTY']
+const INDEX_EXCHANGE = 'NSE_INDEX'
+const FO_EXCHANGE = 'NFO'
 
-function newId(): string {
+function newClientToken(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-function loadPositions(): ManualPosition[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (row): row is ManualPosition =>
-        !!row &&
-        typeof row === 'object' &&
-        typeof (row as ManualPosition).symbol === 'string' &&
-        typeof (row as ManualPosition).qty === 'number'
-    )
-  } catch {
-    return []
-  }
 }
 
 const inr = (n: number) => n.toLocaleString('en-IN')
 
-export function ManualSection() {
+export function ManualSection({
+  ordersAllowed = true,
+  onShowChart,
+}: {
+  ordersAllowed?: boolean
+  onShowChart?: (symbol: string, exchange: string) => void
+}) {
   const [underlying, setUnderlying] = useState<SahasraUnderlying>('BANKNIFTY')
   const [lots, setLots] = useState(1)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [positions, setPositions] = useState<ManualPosition[]>(loadPositions)
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(positions))
-    } catch {
-      /* storage unavailable */
-    }
-  }, [positions])
 
   const signalQ = useQuery({
     queryKey: ['sahasra-signal', underlying],
@@ -86,66 +62,91 @@ export function ManualSection() {
   const lot = data?.atm_lotsize && data.atm_lotsize > 0 ? data.atm_lotsize : null
   const qty = lot ? lots * lot : 0
 
+  const { brackets, refresh } = useVisualBrackets(true)
+  const manualBrackets = useMemo(
+    () =>
+      brackets
+        .filter((bracket) => bracket.strategy === 'Manual')
+        .sort((a, b) => (b.id ?? 0) - (a.id ?? 0)),
+    [brackets]
+  )
+
   const wsSymbols = useMemo(() => {
     const list = [
-      { symbol: underlying, exchange: 'NSE_INDEX' },
-      ...(data?.atm_ce_symbol ? [{ symbol: data.atm_ce_symbol, exchange: 'NFO' }] : []),
-      ...(data?.atm_pe_symbol ? [{ symbol: data.atm_pe_symbol, exchange: 'NFO' }] : []),
-      ...positions.map((pos) => ({ symbol: pos.symbol, exchange: pos.exchange })),
+      { symbol: underlying, exchange: INDEX_EXCHANGE },
+      ...(data?.atm_ce_symbol ? [{ symbol: data.atm_ce_symbol, exchange: FO_EXCHANGE }] : []),
+      ...(data?.atm_pe_symbol ? [{ symbol: data.atm_pe_symbol, exchange: FO_EXCHANGE }] : []),
+      ...manualBrackets.flatMap((bracket) =>
+        bracket.contractSymbol && bracket.contractExchange
+          ? [{ symbol: bracket.contractSymbol, exchange: bracket.contractExchange }]
+          : []
+      ),
     ]
     return [...new Map(list.map((item) => [`${item.exchange}:${item.symbol}`, item])).values()]
-  }, [underlying, data?.atm_ce_symbol, data?.atm_pe_symbol, positions])
+  }, [underlying, data?.atm_ce_symbol, data?.atm_pe_symbol, manualBrackets])
 
   const { data: ticks } = useMarketData({ symbols: wsSymbols, mode: 'LTP' })
-  const tickOf = (symbol: string | null, exchange: string) =>
+  const tickOf = (symbol: string | null | undefined, exchange: string) =>
     symbol ? ticks.get(`${exchange}:${symbol}`)?.data?.ltp : undefined
 
-  const spot = tickOf(underlying, 'NSE_INDEX') ?? data?.spot ?? undefined
-  const ceLtp = tickOf(data?.atm_ce_symbol ?? null, 'NFO')
-  const peLtp = tickOf(data?.atm_pe_symbol ?? null, 'NFO')
+  const spot = tickOf(underlying, INDEX_EXCHANGE) ?? data?.spot ?? undefined
+  const ceLtp = tickOf(data?.atm_ce_symbol, FO_EXCHANGE)
+  const peLtp = tickOf(data?.atm_pe_symbol, FO_EXCHANGE)
   const sideSymbol = (side: Side) => (side === 'CE' ? data?.atm_ce_symbol : data?.atm_pe_symbol)
-  const canBuy = (side: Side) => busy === null && lot !== null && sideSymbol(side) !== null
+  const canBuy = (side: Side) =>
+    ordersAllowed &&
+    busy === null &&
+    lot !== null &&
+    spot != null &&
+    data?.expiry != null &&
+    data?.atm_strike != null &&
+    sideSymbol(side) != null
 
   const buy = async (side: Side) => {
     if (busy !== null) return
+    if (!ordersAllowed) {
+      setError('New manual orders are paused on this device by your administrator.')
+      return
+    }
     const symbol = sideSymbol(side)
-    if (!symbol || !lot) {
+    if (!symbol || !lot || !data?.expiry || data.atm_strike == null || spot == null) {
       setError('The ATM strike is still loading. Wait for the chain, then try again.')
       return
     }
-    const ltp = side === 'CE' ? ceLtp : peLtp
+    const levels = manualBracketLevels(
+      biasFor('BUY', side),
+      spot,
+      data.support,
+      data.resistance,
+      data.ladder
+    )
     setBusy(side)
     setError(null)
     try {
-      const res = await lowIvApi.placeOrder({
-        symbol,
-        exchange: 'NFO',
+      const row = await visualBracketApi.place({
+        underlying,
+        index_exchange: INDEX_EXCHANGE,
+        contract_symbol: symbol,
+        contract_exchange: FO_EXCHANGE,
+        option_type: side,
         action: 'BUY',
         product: 'MIS',
         quantity: qty,
-        ...(ltp != null ? { ltp } : {}),
+        lots,
+        click_price: spot,
+        entry_reference: levels.entryReference,
+        target_price: levels.targetPrice,
+        stop_price: levels.stopPrice,
+        execution_mode: 'SYNTHETIC_UNDERLYING_TRIGGER',
+        entry_order_type: 'MARKET',
+        expiry: data.expiry,
+        strike: data.atm_strike,
+        strike_selection: 'CUSTOM',
+        client_token: newClientToken(),
         strategy: 'Manual',
       })
-      if (res.status === 'success') {
-        setPositions((prev) => [
-          ...prev,
-          {
-            id: newId(),
-            symbol,
-            exchange: 'NFO',
-            underlying,
-            side,
-            qty,
-            entry: ltp ?? null,
-            ts: Date.now(),
-          },
-        ])
-        showToast.success(`BUY ${symbol} ×${qty} placed`)
-      } else {
-        const message = res.message ?? 'The order was not accepted.'
-        setError(message)
-        showToast.error(message)
-      }
+      showToast.success(`BUY ${row.contract_symbol} ×${row.quantity} placed`)
+      await refresh()
     } catch (e) {
       const message = e instanceof Error ? e.message : 'The order could not be placed.'
       setError(message)
@@ -155,29 +156,16 @@ export function ManualSection() {
     }
   }
 
-  const sell = async (pos: ManualPosition) => {
-    if (busy !== null) return
-    setBusy(pos.id)
+  const exitBracket = async (bracket: VisualBracketView) => {
+    if (busy !== null || bracket.id == null) return
+    setBusy(`exit:${bracket.id}`)
     setError(null)
     try {
-      const res = await lowIvApi.closeLeg({
-        symbol: pos.symbol,
-        exchange: pos.exchange,
-        action: 'SELL',
-        product: 'MIS',
-        quantity: pos.qty,
-        strategy: 'Manual',
-      })
-      if (res.status === 'success') {
-        setPositions((prev) => prev.filter((row) => row.id !== pos.id))
-        showToast.success(`SELL ${pos.symbol} ×${pos.qty} placed`)
-      } else {
-        const message = res.message ?? 'The exit was not accepted.'
-        setError(message)
-        showToast.error(message)
-      }
+      await visualBracketApi.exit(bracket.id)
+      showToast.info('Exit requested. The position will be squared off at market.')
+      await refresh()
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'The exit could not be placed.'
+      const message = e instanceof Error ? e.message : 'The position could not be exited.'
       setError(message)
       showToast.error(message)
     } finally {
@@ -185,12 +173,24 @@ export function ManualSection() {
     }
   }
 
-  const clear = (id: string) => {
-    setPositions((prev) => prev.filter((row) => row.id !== id))
+  const cancelBracket = async (bracket: VisualBracketView) => {
+    if (busy !== null || bracket.id == null) return
+    setBusy(`cancel:${bracket.id}`)
+    setError(null)
+    try {
+      await visualBracketApi.cancel(bracket.id)
+      showToast.success('Manual order cancelled.')
+      await refresh()
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'The order could not be cancelled.'
+      setError(message)
+      showToast.error(message)
+    } finally {
+      setBusy(null)
+    }
   }
 
-  const mode =
-    data?.mode === 'analyze' ? 'Sandbox' : data?.mode === 'live' ? 'Live' : '—'
+  const mode = data?.mode === 'analyze' ? 'Sandbox' : data?.mode === 'live' ? 'Live' : '—'
 
   return (
     <Card>
@@ -200,7 +200,8 @@ export function ManualSection() {
           <Badge variant="outline">{mode}</Badge>
         </div>
         <p className="text-xs text-muted-foreground">
-          Buy the at-the-money call or put as a market MIS order.
+          Buy the at-the-money call or put. A target and stop are set on the index and watched by
+          the server.
         </p>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -279,6 +280,13 @@ export function ManualSection() {
           </Button>
         </div>
 
+        {!ordersAllowed && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+            New manual orders are paused on this device by your administrator. Open positions can
+            still be exited.
+          </div>
+        )}
+
         {signalQ.isError && !data && (
           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>The ATM strike could not be read.</span>
@@ -294,63 +302,95 @@ export function ManualSection() {
 
         {error && (
           <div className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800">
-            <div>{error}</div>
-            {hintFor(error) && <div className="mt-1">Fix: {hintFor(error)}</div>}
+            {error}
           </div>
         )}
 
-        {positions.length > 0 && (
+        {manualBrackets.length > 0 && (
           <div className="space-y-2">
-            <div className="text-xs font-medium text-muted-foreground">Manual positions</div>
-            {positions.map((pos) => {
-              const ltp = tickOf(pos.symbol, pos.exchange)
-              const pnl =
-                pos.entry && pos.entry > 0 && ltp != null
-                  ? ((ltp - pos.entry) / pos.entry) * 100
-                  : null
+            <div className="text-xs font-medium text-muted-foreground">Manual orders</div>
+            {manualBrackets.map((bracket) => {
+              const ltp = tickOf(bracket.contractSymbol, bracket.contractExchange ?? FO_EXCHANGE)
+              const entry = bracket.entryFillPrice
+              const pnlPct =
+                entry && entry > 0 && ltp != null ? ((ltp - entry) / entry) * 100 : null
+              const pnlAbs = entry != null && ltp != null ? (ltp - entry) * bracket.quantity : null
               return (
                 <div
-                  key={pos.id}
-                  className="flex items-center justify-between gap-2 rounded-md border p-2 text-xs"
+                  key={bracket.id ?? bracket.clientToken}
+                  className="space-y-2 rounded-md border p-2 text-xs"
                 >
-                  <div className="min-w-0">
-                    <div className="truncate">
-                      <span className="font-medium">
-                        {pos.underlying} ATM {pos.side}
-                      </span>{' '}
-                      <span className="font-mono">{pos.symbol}</span>
-                    </div>
-                    <div className="text-muted-foreground">
-                      ×{pos.qty}
-                      {pos.entry != null ? ` · ref ${pos.entry.toFixed(2)}` : ''}
-                      {ltp != null ? ` · LTP ${ltp.toFixed(2)}` : ''}
-                      {pnl != null && (
-                        <span className={pnl >= 0 ? 'text-green-600' : 'text-red-600'}>
-                          {' '}
-                          ({pnl >= 0 ? '+' : ''}
-                          {pnl.toFixed(2)}%)
-                        </span>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate">
+                        <span className="font-medium">
+                          {bracket.underlying} ATM {bracket.optionType}
+                        </span>{' '}
+                        <span className="font-mono">{bracket.contractSymbol ?? '—'}</span>
+                      </div>
+                      <div className="text-muted-foreground">
+                        {statusLabel(bracket.status)} · ×{bracket.quantity}
+                        {entry != null ? ` · fill ${entry.toFixed(2)}` : ''}
+                        {ltp != null ? ` · LTP ${ltp.toFixed(2)}` : ''}
+                        {pnlPct != null && (
+                          <span className={pnlPct >= 0 ? 'text-green-600' : 'text-red-600'}>
+                            {' '}
+                            ({pnlPct >= 0 ? '+' : ''}
+                            {pnlPct.toFixed(2)}%
+                            {pnlAbs != null
+                              ? ` · ${pnlAbs >= 0 ? '+' : '-'}${inr(Math.abs(Math.round(pnlAbs)))}`
+                              : ''}
+                            )
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-muted-foreground">
+                        Index {inr(Math.round(bracket.entryReference))} · Target{' '}
+                        {inr(Math.round(bracket.targetPrice))} (+
+                        {inr(Math.round(bracket.targetOffset))}) · Stop{' '}
+                        {inr(Math.round(bracket.stopPrice))} (-
+                        {inr(Math.round(bracket.stopOffset))})
+                      </div>
+                      {bracket.errorMessage && (
+                        <div className="mt-1 text-red-700">{bracket.errorMessage}</div>
                       )}
                     </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy !== null}
-                      onClick={() => void sell(pos)}
-                    >
-                      {busy === pos.id ? 'Selling…' : 'Sell'}
-                    </Button>
-                    <button
-                      type="button"
-                      className="text-muted-foreground underline underline-offset-2 disabled:opacity-50"
-                      disabled={busy !== null}
-                      title="Remove this row without placing an order"
-                      onClick={() => clear(pos.id)}
-                    >
-                      clear
-                    </button>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      {onShowChart && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() =>
+                            onShowChart(bracket.underlying, bracket.underlyingExchange)
+                          }
+                        >
+                          Show chart
+                        </Button>
+                      )}
+                      {bracket.status === 'active' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={busy !== null}
+                          onClick={() => void exitBracket(bracket)}
+                        >
+                          {busy === `exit:${bracket.id}` ? 'Exiting…' : 'Exit'}
+                        </Button>
+                      )}
+                      {bracket.status === 'working' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={busy !== null}
+                          onClick={() => void cancelBracket(bracket)}
+                        >
+                          {busy === `cancel:${bracket.id}` ? 'Cancelling…' : 'Cancel'}
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
               )
@@ -359,9 +399,8 @@ export function ManualSection() {
         )}
 
         <p className="text-[11px] text-muted-foreground">
-          The ATM strike follows spot and refreshes every 30 seconds. Orders follow the platform's
-          Sandbox/Live mode. These rows are a local reminder; manage the actual position in
-          Positions.
+          The ATM strike follows spot and refreshes every 30 seconds. Target and stop are index
+          levels; drag them on the index chart. Orders follow the platform's Sandbox/Live mode.
         </p>
       </CardContent>
     </Card>

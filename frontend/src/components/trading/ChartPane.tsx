@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ClipboardPaste,
   Copy,
+  Crosshair,
   RefreshCw,
   Scissors,
   Search,
@@ -26,6 +27,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { visualBracketApi } from '@/api/visualBracket'
 import { GridIcon, PencilIcon, VolumeIcon } from '@/components/chart/menuIcons'
 import { Button } from '@/components/ui/button'
 import {
@@ -36,6 +38,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { useVisualBrackets } from '@/hooks/useVisualBrackets'
+import type { DataExportOptions } from '@/lib/trading/chartDataExport'
 import {
   type ChartStateGate,
   type ChartStateView,
@@ -64,7 +68,14 @@ import {
   type TerminalContextMenu,
   TradingTerminal,
 } from '@/lib/trading/terminal'
-import type { DataExportOptions } from '@/lib/trading/chartDataExport'
+import {
+  isVisualUnderlying,
+  statusLabel,
+  type VisualBracketLevels,
+  type VisualBracketView,
+  visualUnderlyingConfig,
+  withVisualLevels,
+} from '@/lib/trading/visualBracket'
 import type { WorkspaceReplaySnapshot } from '@/lib/trading/workspaceReplay'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -77,7 +88,6 @@ import { DrawingStyleBar } from './DrawingStyleBar'
 import { DrawingTextDialog, type TextRequest } from './DrawingTextDialog'
 import { OptionChainOverlayControl } from './OptionChainOverlayControl'
 import { OptionChainOverlayProvider } from './OptionChainOverlayProvider'
-import { PriceScaleMenu } from './PriceScaleMenu'
 import { ChartOrderBridgeContext } from './dock/chartOrderBridge'
 import {
   type ChartOrderAction,
@@ -88,8 +98,10 @@ import {
   stillHeld,
 } from './dock/chartOrderRows'
 import { cancelDockOrder, closeDockPosition } from './dock/orderActions'
+import { PriceScaleMenu } from './PriceScaleMenu'
 import { QuickIntervalBox, useQuickEntry, useSeedBuffer } from './QuickEntry'
 import { Tip } from './Tip'
+import { VisualOrderPanel } from './VisualOrderPanel'
 
 // The forms a chart opens on request: none is needed to paint it. Mounted only
 // while open, so their code is fetched on the first opening rather than with
@@ -452,6 +464,124 @@ export function ChartPane({
   const [interval, setIntervalState] = useState('5m')
   const [chartType, setChartTypeState] = useState('candlestick')
   const [sym, setSym] = useState<SymbolView | null>(null)
+  const [visualOn, setVisualOn] = useState(false)
+  const [visualClick, setVisualClick] = useState<{
+    price: number
+    point: { x: number; y: number }
+    paneIndex: number
+  } | null>(null)
+  const [visualStaged, setVisualStaged] = useState<VisualBracketView | null>(null)
+  const symRef = useRef<SymbolView | null>(null)
+  const replayRef = useRef<ReplayState | null>(null)
+  const visualStagedRef = useRef<VisualBracketView | null>(null)
+  const activeVisualRef = useRef<VisualBracketView | null>(null)
+  const visualKeyRef = useRef('')
+  const visualSupported = Boolean(
+    sym && !sym.quoteOnly && !sym.synthetic && isVisualUnderlying(sym.symbol, sym.exchange)
+  )
+  const { brackets: visualBrackets, refresh: refreshVisualBrackets } = useVisualBrackets(
+    ready && visualSupported
+  )
+  const activeVisual = useMemo(() => {
+    if (!sym) return null
+    const rank: Record<string, number> = { active: 0, working: 1, exiting: 2 }
+    return (
+      visualBrackets
+        .filter(
+          (bracket) =>
+            bracket.underlying === sym.symbol &&
+            bracket.underlyingExchange === sym.exchange &&
+            bracket.status in rank
+        )
+        .sort(
+          (a, b) =>
+            (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || (b.id ?? 0) - (a.id ?? 0)
+        )[0] ?? null
+    )
+  }, [visualBrackets, sym])
+
+  symRef.current = sym
+  visualStagedRef.current = visualStaged
+  activeVisualRef.current = activeVisual
+
+  useEffect(() => {
+    terminalRef.current?.setVisualOrderTool(visualOn)
+  }, [visualOn])
+
+  useEffect(() => {
+    if (!visualSupported) {
+      setVisualOn(false)
+      setVisualClick(null)
+      setVisualStaged(null)
+    }
+  }, [visualSupported])
+
+  useEffect(() => {
+    const key = sym ? `${sym.symbol}:${sym.exchange}` : ''
+    if (visualKeyRef.current && visualKeyRef.current !== key) {
+      setVisualClick(null)
+      setVisualStaged(null)
+      terminalRef.current?.setVisualBracketOverlay(null)
+    }
+    visualKeyRef.current = key
+  }, [sym])
+
+  useEffect(() => {
+    terminalRef.current?.setVisualBracketOverlay(visualStaged ?? activeVisual ?? null)
+  }, [visualStaged, activeVisual])
+
+  const handleVisualStage = useCallback((state: VisualBracketView | null) => {
+    setVisualStaged(state)
+    if (!state) terminalRef.current?.setVisualBracketOverlay(null)
+  }, [])
+
+  const handleVisualLevelChange = useCallback((levels: VisualBracketLevels) => {
+    const previous = visualStagedRef.current ?? activeVisualRef.current
+    if (!previous) return
+    const next = withVisualLevels(previous, levels)
+    if (visualStagedRef.current) setVisualStaged(next)
+    terminalRef.current?.setVisualBracketOverlay(next)
+  }, [])
+
+  const handleVisualLevelCommit = useCallback(
+    (levels: VisualBracketLevels) => {
+      const previous = visualStagedRef.current ?? activeVisualRef.current
+      if (!previous) return
+      const next = withVisualLevels(previous, levels)
+      if (visualStagedRef.current) setVisualStaged(next)
+      terminalRef.current?.setVisualBracketOverlay(next)
+      if (previous.id && (previous.status === 'active' || previous.status === 'working')) {
+        void visualBracketApi
+          .modify(previous.id, {
+            entry_reference: levels.entryReference,
+            target_price: levels.targetPrice,
+            stop_price: levels.stopPrice,
+          })
+          .then(() => refreshVisualBrackets())
+          .catch((error) => {
+            showToast.error(
+              error instanceof Error ? error.message : 'The visual order could not be changed.'
+            )
+          })
+      }
+    },
+    [refreshVisualBrackets]
+  )
+
+  const handleVisualClick = useCallback(
+    (click: { price: number; point: { x: number; y: number }; paneIndex: number }) => {
+      const view = symRef.current
+      if (!view || !isVisualUnderlying(view.symbol, view.exchange)) return
+      if (replayRef.current) {
+        showToast.error('Finish replay before placing an order.')
+        return
+      }
+      setVisualStaged(null)
+      setVisualClick({ price: click.price, point: click.point, paneIndex: click.paneIndex })
+    },
+    []
+  )
+
   const [branding, setBranding] = useState<BrandingLink | null>(null)
   const [qty, setQty] = useState(1)
   const [wsState, setWsState] = useState('connecting')
@@ -556,6 +686,36 @@ export function ChartPane({
   /** The confirm shown on leaving: the playhead is the only record of the walk. */
   const [confirmLeave, setConfirmLeave] = useState(false)
 
+  const exitVisual = useCallback(
+    async (id: number) => {
+      try {
+        await visualBracketApi.exit(id)
+        showToast.info('Exit requested. The position will be squared off at market.')
+        void refreshVisualBrackets()
+      } catch (error) {
+        showToast.error(
+          error instanceof Error ? error.message : 'The position could not be exited.'
+        )
+      }
+    },
+    [refreshVisualBrackets]
+  )
+
+  const cancelVisual = useCallback(
+    async (id: number) => {
+      try {
+        await visualBracketApi.cancel(id)
+        showToast.success('Visual order cancelled.')
+        void refreshVisualBrackets()
+      } catch (error) {
+        showToast.error(
+          error instanceof Error ? error.message : 'The visual order could not be cancelled.'
+        )
+      }
+    },
+    [refreshVisualBrackets]
+  )
+
   /* ── boot this pane's terminal once ───────────────────────────────────── */
   useEffect(() => {
     let current = true
@@ -603,6 +763,7 @@ export function ChartPane({
       onWsState: (s) => current && setWsState(s),
       onSymbolLoaded: (view) => {
         if (!current) return
+        symRef.current = view
         setSym(view)
         setQty(1)
         symbolCbRef.current?.(paneId, `${view.exchange}:${view.symbol}`)
@@ -637,6 +798,7 @@ export function ChartPane({
       },
       onReplayChange: (state) => {
         if (!current) return
+        replayRef.current = state
         setReplay(state)
         setPicking(terminalRef.current?.replayPickingBar() ?? false)
         setReplayLoading(terminalRef.current?.replayLoadingBars() ?? false)
@@ -650,6 +812,9 @@ export function ChartPane({
         if (style) setTextReq({ id: r.id, tool: r.tool, style })
       },
       onOrderTicket: (req) => current && setTicket(req),
+      onVisualOrderClick: (click) => current && handleVisualClick(click),
+      onVisualBracketLevelChange: (levels) => current && handleVisualLevelChange(levels),
+      onVisualBracketLevelCommit: (levels) => current && handleVisualLevelCommit(levels),
     }
 
     const release = () => {
@@ -718,7 +883,17 @@ export function ChartPane({
     // `username` is read at build time rather than subscribed: a terminal is
     // rebuilt on a sign-in change anyway, and re-creating the chart because a
     // display name moved would throw away every drawing on it.
-  }, [paneId, apiKey, wsUrl, noteHistory, linkGroup, initialWorkspacePane])
+  }, [
+    paneId,
+    apiKey,
+    wsUrl,
+    noteHistory,
+    linkGroup,
+    initialWorkspacePane,
+    handleVisualClick,
+    handleVisualLevelChange,
+    handleVisualLevelCommit,
+  ])
 
   /* ── follow the page-level drawing rail ───────────────────────────────── */
   useEffect(() => {
@@ -1399,6 +1574,38 @@ export function ChartPane({
             </Button>
           </Tip>
 
+          {visualSupported && (
+            <Tip
+              tip={{
+                title: visualOn ? 'Visual order on' : 'Visual order',
+                chord: 'Shift+Click',
+                sub: 'Click the chart to stage a target and stop',
+              }}
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label="Visual order"
+                aria-pressed={visualOn}
+                disabled={Boolean(replay || picking || replayLoading) || transitionLocked}
+                className={cn('h-8 shrink-0 gap-1', visualOn && 'border-primary text-primary')}
+                onClick={() => {
+                  const next = !visualOn
+                  setVisualOn(next)
+                  terminalRef.current?.setVisualOrderTool(next)
+                  if (!next) {
+                    setVisualClick(null)
+                    setVisualStaged(null)
+                    terminalRef.current?.setVisualBracketOverlay(null)
+                  }
+                }}
+              >
+                <Crosshair className="h-4 w-4" />
+                <span className="hidden sm:inline">Visual</span>
+              </Button>
+            </Tip>
+          )}
+
           {/* Workspace controls share the selected chart's row, but they are not
             about this chart: they are the grid, its templates and whether a
             click anywhere in it sends an order. They sat between Alerts and
@@ -1419,7 +1626,13 @@ export function ChartPane({
           <div className="mx-0.5 h-5 w-px shrink-0 bg-border" aria-hidden="true" />
           {/* Wrapped, so the label still shows while the button is disabled: a
               disabled button takes no pointer events of its own. */}
-          <Tip tip={{ title: 'Undo chart change', chord: `${MOD_KEY}+Z`, sub: 'Orders are never undone' }}>
+          <Tip
+            tip={{
+              title: 'Undo chart change',
+              chord: `${MOD_KEY}+Z`,
+              sub: 'Orders are never undone',
+            }}
+          >
             <span className="inline-flex shrink-0">
               <Button
                 variant="ghost"
@@ -1685,6 +1898,61 @@ export function ChartPane({
         {/* The armed drawing tool's glyph follows the pointer: the terminal
             sets --tool-cursor while a tool is armed and clears it after. */}
         <div ref={chartRef} className="absolute inset-0 [cursor:var(--tool-cursor,auto)]" />
+        {activeVisual && !visualClick && visualSupported && (
+          <div className="absolute bottom-3 left-3 z-20 flex items-center gap-2 rounded-md border border-border bg-popover/95 px-2.5 py-1.5 text-xs shadow-lg backdrop-blur">
+            <span className="font-medium">
+              {activeVisual.action} {activeVisual.optionType} {activeVisual.contractSymbol}
+            </span>
+            <span className="text-muted-foreground">{statusLabel(activeVisual.status)}</span>
+            {activeVisual.status === 'active' && activeVisual.id != null && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => void exitVisual(activeVisual.id as number)}
+              >
+                Exit
+              </Button>
+            )}
+            {activeVisual.status === 'working' && activeVisual.id != null && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => void cancelVisual(activeVisual.id as number)}
+              >
+                Cancel
+              </Button>
+            )}
+          </div>
+        )}
+        {visualClick && sym && visualSupported && (
+          <VisualOrderPanel
+            apiKey={apiKey}
+            underlying={sym.symbol}
+            underlyingExchange={visualUnderlyingConfig(sym.symbol)?.indexExchange ?? sym.exchange}
+            foExchange={visualUnderlyingConfig(sym.symbol)?.foExchange ?? 'NFO'}
+            clickPrice={visualClick.price}
+            anchor={{ x: visualClick.point.x + 14, y: visualClick.point.y + 14 }}
+            staged={visualStaged}
+            onStage={handleVisualStage}
+            onClose={() => {
+              setVisualClick(null)
+              setVisualStaged(null)
+              terminalRef.current?.setVisualBracketOverlay(null)
+            }}
+            onPlaced={() => {
+              setVisualClick(null)
+              setVisualStaged(null)
+              void refreshVisualBrackets()
+            }}
+            onToast={(message, kind) => {
+              if (kind === 'ok') showToast.success(message)
+              else if (kind === 'err') showToast.error(message)
+              else showToast.info(message)
+            }}
+          />
+        )}
 
         {/* Nothing on this pane takes input until it has been built. */}
         {!ready && <div className="absolute inset-0" aria-hidden="true" />}

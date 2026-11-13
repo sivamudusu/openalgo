@@ -385,6 +385,58 @@ off must never take away your exit.
 Orders placed from the chart are tagged with the `chart-trading` strategy and
 respect Live and Analyze mode exactly like every other order path in OpenAlgo.
 
+## Visual Orders
+
+The **Visual** button on a chart toolbar stages a target and stop directly on
+the index. `Shift` and click does the same without turning the button on. It is
+available on index charts (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50,
+SENSEX and BANKEX) and refuses a chart of an option contract itself.
+
+Click a price to open the visual order panel. Choose **Buy CE**, **Buy PE**,
+**Sell CE** or **Sell PE**, the expiry, the strike (ATM, ITM or OTM by one or
+two steps, or a custom listed strike) and the lots. The panel shows the option
+contract, its live premium, and an estimate of the result at target and stop
+when Greeks are available.
+
+The chart draws three lines: entry at the price you clicked, target in green
+and stop in red. Drag the target or stop handle to move it. A bullish trade
+keeps the target above entry and the stop below it; a bearish trade is the
+mirror. The entry is fixed once the order is placed.
+
+**Place Order** sends a market order for the option. The order is then
+**Staged**, **Placed**, **Active** and finally **Closed** as it moves. While it
+is active the server watches the index price, not the option premium, and sends
+a market exit when the target or stop is reached. Target and stop are therefore
+not resting broker orders: dragging them changes the server's trigger levels,
+and the exit is sent when the index crosses one of them. This works for MIS and
+on every broker, unlike a native GTT/OCO, which the platform only offers on
+some brokers and not for MIS.
+
+The server keeps watching after you close the tab or change charts. The visual
+order is restored when you reopen the chart, and a restart reconciles it
+against the broker's order and position books before it resumes or exits. Live
+and Sandbox are separate: a live order's exit is never sent to the Sandbox, and
+the reverse is also true.
+
+The tool refuses to stage an order while a pane is replaying. If option quotes
+are unavailable the panel says so and disables **Place Order**; the underlying
+index feed is what protects an order that is already active.
+
+### Manual ATM orders
+
+The **Signals** panel's manual ticket buys the ATM call or put on NIFTY or
+BANKNIFTY as a market MIS order. It is a visual order underneath. The first
+target and stop come from the Sahasra OI support and resistance: for a call the
+target is resistance and the stop is support; for a put the mirror. If those
+levels are unavailable, on the wrong side of entry, or too close together, the
+ticket falls back to two strike steps for the target and one for the stop.
+
+The target and stop are index levels, so they are dragged on the index chart,
+not on the option premium chart. **Show chart** on a manual order opens its
+index. The server watches the index and sends a market exit when either level is
+touched, even after the tab is closed. Manual orders keep the `Manual` strategy
+tag, separate from the visual tool's own orders.
+
 ## The Bottom Dock
 
 The dock is a strip under the chart carrying a live count per tab. Click a tab
