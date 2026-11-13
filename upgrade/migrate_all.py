@@ -92,6 +92,7 @@ MIGRATIONS = [
     ("migrate_agent_voice.py", "Agent Voice Surface Settings"),
     ("migrate_agent_voice_phrase_removal.py", "Agent Voice Approval Phrase Removal"),
     ("migrate_alert_log.py", "Chart Alert Log (/trading alerts history)"),
+    ("migrate_visual_bracket.py", "Visual Chart Orders (draggable bracket orders)"),
 ]
 
 # Legacy migrations historically used non-zero exits for best-effort warnings,
@@ -99,7 +100,13 @@ MIGRATIONS = [
 # required schema migrations are listed explicitly: their failure must reach
 # this runner's summary and process exit code instead of being reported as a
 # successful warning.
-REQUIRED_MIGRATIONS = frozenset({"migrate_strategy_module.py", "migrate_strategy_universe_tab.py"})
+REQUIRED_MIGRATIONS = frozenset(
+    {
+        "migrate_strategy_module.py",
+        "migrate_strategy_universe_tab.py",
+        "migrate_visual_bracket.py",
+    }
+)
 
 
 def run_migration(script_name, description):

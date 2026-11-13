@@ -18,10 +18,10 @@ import type {
   IndicatorBarSource,
   IndicatorInputCondition,
   IndicatorState,
-  SeriesTransformSpec,
   LinkGroup,
   SeriesMarker,
   SeriesMarkers,
+  SeriesTransformSpec,
 } from 'openalgo-charts'
 import {
   AlertController,
@@ -95,6 +95,15 @@ import type { AlertFacts } from './alertMessage'
 import { fillAlertMessage } from './alertMessage'
 import { askToNotify } from './alertNotify'
 import { mergeAlertRuntime } from './alertRuntime'
+import { csvOptions, type DataExportOptions } from './chartDataExport'
+import { chartMotionOptions } from './chartMotion'
+import { CHART_READY, type ChartStateView, chartLoadFailed, chartNoData } from './chartState'
+import {
+  type ComparisonScale,
+  comparisonScaleOf,
+  isComparisonScale,
+  storedComparisonMode,
+} from './comparisonScale'
 import { ExpressionFeed, isChartExpression, resolveLeg } from './expressionFeed'
 import {
   type IndicatorTemplateMode,
@@ -102,16 +111,14 @@ import {
   readStoredIndicators,
   type StoredIndicatorRecord,
 } from './indicatorTemplates'
-import { chartMotionOptions } from './chartMotion'
-import { CHART_READY, type ChartStateView, chartLoadFailed, chartNoData } from './chartState'
 import { openInterestCapability } from './openInterest'
 import {
   isPriceAxisSetting,
   PRICE_AXIS_DEFAULTS,
-  PriceAxisController,
   type PriceAxisCommand,
-  pinOnceMeasured,
+  PriceAxisController,
   type PriceAxisMenu,
+  pinOnceMeasured,
   priceAxisPatch,
   priceAxisSettingsView,
   priceAxisShortcuts,
@@ -119,14 +126,9 @@ import {
 import { parseRangeChoice, type RangeChoice, serializeRangeChoice } from './rangeChoice'
 import { replayTiming } from './replayTiming'
 import { applySessionHours } from './sessionHours'
-import { csvOptions, type DataExportOptions } from './chartDataExport'
 import { TerminalComparisons } from './terminalComparisons'
-import {
-  type ComparisonScale,
-  comparisonScaleOf,
-  isComparisonScale,
-  storedComparisonMode,
-} from './comparisonScale'
+import type { VisualBracketLevels, VisualBracketView } from './visualBracket'
+import { type VisualBracketClick, VisualBracketController } from './visualBracketController'
 import type { PreparedReplayMember } from './workspaceReplay'
 import {
   createWorkspacePanePreferences,
@@ -213,15 +215,8 @@ import {
   describeDrawings,
   isAgentDrawingId,
 } from './chartContract'
-import { CurrentDrawingSource, profileObjectProvider } from './chartObjectsAdapter'
-import {
-  applyChartDialogMetrics,
-  buildChartTheme,
-  mutedTradeColors,
-  resolveCssColor,
-  volumeColor,
-} from './chartTheme'
 import { type HistoryDirection, TerminalHistory } from './chartHistory'
+import { CurrentDrawingSource, profileObjectProvider } from './chartObjectsAdapter'
 import {
   foldedStudyIds,
   panesToFold,
@@ -229,6 +224,13 @@ import {
   type StudyMenu,
   studyMenuAt,
 } from './chartPaneActions'
+import {
+  applyChartDialogMetrics,
+  buildChartTheme,
+  mutedTradeColors,
+  resolveCssColor,
+  volumeColor,
+} from './chartTheme'
 import { CHART_TYPES, volumeUnderElements } from './chartTypes'
 import { COMPARISON_PALETTE } from './comparisonColors'
 import {
@@ -503,6 +505,12 @@ export interface TerminalCallbacks {
    * nothing is placed until it confirms.
    */
   onOrderTicket?(req: OrderTicketRequest): void
+  /** A visual-order click on the chart, before anything is placed. */
+  onVisualOrderClick?(click: VisualBracketClick): void
+  /** The trader dragged a target or stop; live preview. */
+  onVisualBracketLevelChange?(levels: VisualBracketLevels): void
+  /** The trader released a target or stop: persist the levels. */
+  onVisualBracketLevelCommit?(levels: VisualBracketLevels): void
 }
 
 export interface TerminalComparisonItem {
@@ -1291,6 +1299,9 @@ export class TradingTerminal {
   private sym: SymbolView | null = null
   private position: PositionState | null = null
   private readonly orderLines = new Map<string, OrderLineRec>()
+  private visualBracket: VisualBracketController | null = null
+  private visualBracketState: VisualBracketView | null = null
+  private visualOrderEnabled = false
 
   private interval = '5m'
   /**
@@ -2474,6 +2485,8 @@ export class TradingTerminal {
     this.comparisons?.detach()
     this.detachAlerts()
     this.detachObjects()
+    this.visualBracket?.destroy()
+    this.visualBracket = null
     this.profileLayer?.dispose()
     this.profileLayer = null
     // Snapshot drawings before the chart they live on goes away, and hand them
@@ -2839,6 +2852,7 @@ export class TradingTerminal {
       })
       return bars
     })
+    this.attachVisualBracket()
   }
 
   /** Safe link metadata for the active chart branding, if it supplies a destination. */
@@ -7938,6 +7952,42 @@ export class TradingTerminal {
     }
   }
 
+  /* ── visual chart orders ─────────────────────────────────────────────── */
+
+  /** Turn the visual order tool on or off for this pane. */
+  setVisualOrderTool(on: boolean): void {
+    this.visualOrderEnabled = on
+    this.visualBracket?.setEnabled(on)
+  }
+
+  visualOrderToolEnabled(): boolean {
+    return this.visualOrderEnabled
+  }
+
+  /** Paint one staged or active bracket, or clear it with null. */
+  setVisualBracketOverlay(state: VisualBracketView | null): void {
+    this.visualBracketState = state
+    this.visualBracket?.setOverlay(state)
+  }
+
+  visualBracketOverlay(): VisualBracketView | null {
+    return this.visualBracketState
+  }
+
+  private attachVisualBracket(): void {
+    this.visualBracket?.destroy()
+    this.visualBracket = null
+    if (!this.chart) return
+    this.visualBracket = new VisualBracketController({
+      chart: this.chart,
+      onClick: (click) => this.cb.onVisualOrderClick?.(click),
+      onLevelChange: (levels) => this.cb.onVisualBracketLevelChange?.(levels),
+      onLevelCommit: (levels) => this.cb.onVisualBracketLevelCommit?.(levels),
+    })
+    this.visualBracket.setEnabled(this.visualOrderEnabled)
+    this.visualBracket.setOverlay(this.visualBracketState)
+  }
+
   destroy() {
     if (this.destroyed) return
     // Optional: a terminal built without its fields (a test double) has none.
@@ -7968,6 +8018,8 @@ export class TradingTerminal {
     this.detachAlerts()
     this.detachObjects()
     this.detachDrawing()
+    this.visualBracket?.destroy()
+    this.visualBracket = null
     if (this.bookTimer) clearInterval(this.bookTimer)
     this.bookTimer = null
     this.stopLtpFallback()

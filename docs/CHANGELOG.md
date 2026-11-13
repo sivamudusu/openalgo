@@ -551,6 +551,47 @@ update; no behaviour change is expected.
 - `urllib3` 2.7.0 to 2.8.0.
 - `axios` 1.18 to 1.20.0 in the frontend.
 
+### Visual chart orders on /trading
+
+A **Visual** button on the index charts stages a target and stop directly on
+the chart and places the matching option order.
+
+- **Buy CE, Buy PE, Sell CE or Sell PE.** The panel selects the expiry, an ATM,
+  ITM or OTM strike (or a custom listed one), and the lots, and shows the
+  option contract and its live premium.
+- **Draggable target and stop.** The green and red zones update as the handles
+  are dragged. A bullish trade keeps the target above entry and the stop below
+  it; a bearish trade is the mirror.
+- **Server-side exit, not a resting broker order.** While the order is active
+  the server watches the underlying index and sends a market exit when the
+  target or stop is crossed. This works with MIS and on every broker. Native
+  GTT/OCO remains limited to the brokers and products that support it.
+- **Survives the tab and a restart.** Active visual orders are stored, restored
+  on the chart, and reconciled against the broker's order and position books
+  after a restart. Live and Sandbox never cross.
+- **No duplicate exits.** The exit is claimed in one atomic step before any
+  order is sent; a refused exit leaves the order active so it can retry instead
+  of pretending the position is flat.
+
+The feature is index-only for now: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY,
+NIFTYNXT50, SENSEX and BANKEX. Upgrading installations must run
+`upgrade/migrate_visual_bracket.py`, which `migrate_all.py` now includes.
+
+### Manual ATM orders get targets and stops
+
+The manual ticket in the `/trading` signals rail now places its ATM CE or PE
+order as a visual bracket. The first target and stop come from Sahasra's OI
+support and resistance, or from one and two strike steps when those levels are
+missing or on the wrong side. Both levels are draggable on the index chart, and
+the server watches the index and exits at market when either is touched, so the
+protection survives a closed tab or a restart.
+
+- **Show chart** on a manual order opens its index beside the option chart.
+- Manual orders keep their `Manual` strategy tag, so their P&L stays separate
+  from the visual tool's own orders.
+- The new `strategy` column is added by `upgrade/migrate_visual_bracket.py`;
+  existing visual orders keep the `VisualBracket` tag.
+
 ## [2.0.2.6] - 2026-09-23
 
 ### OpenScript and Chart Alerts Release

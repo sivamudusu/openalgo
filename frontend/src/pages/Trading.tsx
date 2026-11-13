@@ -598,6 +598,22 @@ function TradingWorkspace({ account }: { account: string | null }) {
     [panelTarget, stopWorkspaceReplay]
   )
 
+  /** Open an index chart from a manual order row in the signals panel. */
+  const showIndexChart = useCallback(
+    (symbol: string, exchange: string) => {
+      const target = panelTarget()
+      if (!target) {
+        showToast.error('Open a chart first, then show the order on its index.')
+        return
+      }
+      stopWorkspaceReplay()
+      void target.loadSymbol({ symbol, exchange, name: symbol }).then((loaded) => {
+        if (!loaded) showToast.error(`The ${symbol} index chart could not be opened.`)
+      })
+    },
+    [panelTarget, stopWorkspaceReplay]
+  )
+
   /**
    * Whether any pane is replaying, or picking a bar to replay from. The
    * dock's actions go to the broker at the live price, and the chart already
@@ -1699,7 +1715,7 @@ function TradingWorkspace({ account }: { account: string | null }) {
           )}
           {apiKey && wsUrl && panel === 'signals' && (
             <Suspense fallback={null}>
-              <SignalsPanel />
+              <SignalsPanel onShowChart={showIndexChart} />
             </Suspense>
           )}
           {apiKey && wsUrl && panel === 'backtest' && (

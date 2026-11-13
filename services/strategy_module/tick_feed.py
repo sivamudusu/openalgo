@@ -290,7 +290,7 @@ class RiskTickFeed:
         # call or a notify.
         self._lock = threading.Lock()
         self._symbols: dict[str, _SymbolState] = {}
-        self._runs: dict[int, set[str]] = {}
+        self._runs: dict[Any, set[str]] = {}
         #: Read by the producer without a lock. Kept as a separate set rather
         #: than testing against _symbols so the producer never touches a
         #: structure the consumer mutates in place.
@@ -309,6 +309,11 @@ class RiskTickFeed:
 
         self._notify: Callable[[TickSourceEvent], None] | None = None
         self._on_price: Callable[[str, str, float], None] | None = None
+        #: Additional price consumers, kept beside the single legacy hook so
+        #: the strategy module's ``set_on_price`` keeps its replace semantics.
+        #: The visual bracket engine registers here; unregistering one must not
+        #: disturb the other, which is why this is a list and not a second slot.
+        self._price_hooks: list[Callable[[str, str, float], None]] = []
 
         self._degraded = False
         self._backoff_index = -1
@@ -345,12 +350,54 @@ class RiskTickFeed:
         Both the websocket and the REST fallback go through it. A leg that has
         fallen back to polling has to be evaluated on polled prices too, or the
         fallback would keep the price fresh on screen while protecting nothing.
+
+        A second consumer (the visual bracket engine) must not replace this
+        hook. It uses :meth:`add_price_hook` instead; both are called.
         """
         self._on_price = callback
 
+    def add_price_hook(self, callback: Callable[[str, str, float], None]) -> Callable[[], None]:
+        """Register an additional price consumer and return its unsubscribe.
+
+        Unlike :meth:`set_on_price`, hooks accumulate. This is the seam that
+        lets a second engine judge its own stops on the same feed without
+        stealing the strategy module's hook, and without a second websocket
+        subscription or a second pair of polling threads.
+        """
+        with self._lock:
+            if callback not in self._price_hooks:
+                self._price_hooks.append(callback)
+
+        def unsubscribe() -> None:
+            self.remove_price_hook(callback)
+
+        return unsubscribe
+
+    def remove_price_hook(self, callback: Callable[[str, str, float], None]) -> None:
+        """Remove one additional price consumer. Safe when it was never added."""
+        with self._lock:
+            try:
+                self._price_hooks.remove(callback)
+            except ValueError:
+                pass
+
+    def add_subscription(self, owner: Any, symbols: Iterable[Any]) -> list[str]:
+        """Hold subscriptions for ``owner``. An owner may be an int or a string.
+
+        The strategy module passes its run id; the visual bracket engine passes
+        a namespaced key such as ``"visual_bracket:12"``. Sharing the registry
+        is what keeps one websocket subscription per symbol even when two
+        features watch the same underlying.
+        """
+        return self.add_run_subscriptions(owner, symbols)
+
+    def remove_subscription(self, owner: Any) -> list[str]:
+        """Release every subscription ``owner`` holds."""
+        return self.remove_run_subscriptions(owner)
+
     # ------------------------------------------------------------ subscriptions
 
-    def add_run_subscriptions(self, run_id: int, symbols: Iterable[Any]) -> list[str]:
+    def add_run_subscriptions(self, run_id: Any, symbols: Iterable[Any]) -> list[str]:
         """Hold a subscription for ``run_id`` on each symbol. Never raises.
 
         Symbols may be ``(symbol, exchange)`` pairs or dicts with those keys.
@@ -409,7 +456,7 @@ class RiskTickFeed:
             self._ws_subscribe(fresh)
         return [_key(s, e) for s, e in fresh]
 
-    def remove_run_subscriptions(self, run_id: int) -> list[str]:
+    def remove_run_subscriptions(self, run_id: Any) -> list[str]:
         """Release every subscription ``run_id`` holds. Never raises.
 
         Returns the keys dropped entirely, that is, the ones no other run was
@@ -865,6 +912,7 @@ class RiskTickFeed:
             pairs = [(s.symbol, s.exchange) for s in self._symbols.values()]
             self._symbols.clear()
             self._runs.clear()
+            self._price_hooks.clear()
             self._wanted = frozenset()
         if pairs:
             self._ws_unsubscribe(pairs)
@@ -1075,7 +1123,7 @@ class RiskTickFeed:
         return self._api_key
 
     def _emit_prices(self, prices: list[tuple[str, str, float]]) -> None:
-        """Hand prices to the risk hook. Green side, always outside every lock.
+        """Hand prices to every registered consumer. Green side, no lock held.
 
         Outside the lock because the handler evaluates risk and can place an
         order. Called inside it, every price read and tick for every symbol
@@ -1084,16 +1132,24 @@ class RiskTickFeed:
         """
         if not prices:
             return
+        with self._lock:
+            hooks = list(self._price_hooks)
         callback = self._on_price
-        if callback is None:
+        if callback is None and not hooks:
             return
         for symbol, exchange, price in prices:
-            try:
-                callback(symbol, exchange, price)
-            except Exception:
-                # One symbol's evaluation failing must not cost the rest of the
-                # batch their prices.
-                logger.exception("Strategy tick feed price hook raised for %s", symbol)
+            if callback is not None:
+                try:
+                    callback(symbol, exchange, price)
+                except Exception:
+                    # One symbol's evaluation failing must not cost the rest of
+                    # the batch their prices.
+                    logger.exception("Strategy tick feed price hook raised for %s", symbol)
+            for hook in hooks:
+                try:
+                    hook(symbol, exchange, price)
+                except Exception:
+                    logger.exception("Strategy tick feed extra price hook raised for %s", symbol)
 
     def _emit(self, events: list[TickSourceEvent]) -> None:
         """Log and push transitions. Green side, always outside every lock.

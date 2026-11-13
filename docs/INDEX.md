@@ -22,7 +22,7 @@ need → drill into the specific file. Don't load everything at once.
 | Service-layer functions & Flow JSON import | [prompt/services_documentation.md](prompt/services_documentation.md) · [prompt/flow-import-format.md](prompt/flow-import-format.md) |
 | Strategy module & risk engine (multi-leg options, signal mode, RMS) | [prompt/strategy_rms_documentation.md](prompt/strategy_rms_documentation.md) · [api/strategy-services/](api/strategy-services/) · [prd/strategy-module-rms.md](prd/strategy-module-rms.md) · [bdd/strategy_module_rms.feature](bdd/strategy_module_rms.feature) |
 | Technical indicators (`ta` library) | [<prompt/indicators/openalgo indicators - introduction.md>](<prompt/indicators/openalgo indicators - introduction.md>) |
-| The charting terminal at `/trading`, its order dock and its shortcuts | [userguide/32-charting-terminal](userguide/32-charting-terminal/README.md) |
+| The charting terminal at `/trading`, its order dock, visual orders and its shortcuts | [userguide/32-charting-terminal](userguide/32-charting-terminal/README.md) |
 | Writing your own chart indicators for `/trading` | [custom-indicators.md](custom-indicators.md) |
 | Writing studies in OpenScript for `/trading` | [openscript.md](openscript.md) |
 | Step-by-step user guide (setup → first order → integrations) | [userguide/README.md](userguide/README.md) |
@@ -45,6 +45,7 @@ need → drill into the specific file. Don't load everything at once.
 |---|---|
 | Agent (`/agent`) | [design/55-agent/README.md](design/55-agent/README.md) |
 | Scalping Terminal (`/scalping`) | [scalping/PRD.md](scalping/PRD.md) |
+| Visual chart orders (draggable bracket orders on `/trading`) | [plans/2026-11-02-visual-bracket.md](plans/2026-11-02-visual-bracket.md) |
 | Scanner architecture | [scanner-architecture.md](scanner-architecture.md) |
 | WhatsApp alerts | [whatsapp.md](whatsapp.md) |
 | Telegram chart rendering | [telegram-chart-rendering.md](telegram-chart-rendering.md) |
