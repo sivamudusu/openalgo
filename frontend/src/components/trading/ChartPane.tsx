@@ -482,6 +482,11 @@ export function ChartPane({
   const { brackets: visualBrackets, refresh: refreshVisualBrackets } = useVisualBrackets(
     ready && visualSupported
   )
+  // The terminal is built once. Its callback table must not change when the
+  // bracket hook moves from disabled to enabled as the chart becomes ready,
+  // or the boot effect tears the chart down and rebuilds it in a loop.
+  const refreshVisualBracketsRef = useRef(refreshVisualBrackets)
+  refreshVisualBracketsRef.current = refreshVisualBrackets
   const activeVisual = useMemo(() => {
     if (!sym) return null
     const rank: Record<string, number> = { active: 0, working: 1, exiting: 2 }
@@ -557,7 +562,7 @@ export function ChartPane({
             target_price: levels.targetPrice,
             stop_price: levels.stopPrice,
           })
-          .then(() => refreshVisualBrackets())
+          .then(() => refreshVisualBracketsRef.current())
           .catch((error) => {
             showToast.error(
               error instanceof Error ? error.message : 'The visual order could not be changed.'
@@ -565,7 +570,7 @@ export function ChartPane({
           })
       }
     },
-    [refreshVisualBrackets]
+    []
   )
 
   const handleVisualClick = useCallback(

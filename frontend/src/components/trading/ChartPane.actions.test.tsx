@@ -195,6 +195,7 @@ describe('order rows in the chart menu', () => {
   it('offers the visual order tool on a quote-only index chart', async () => {
     const { view } = await mount(null, 'live', NIFTY_INDEX)
     expect(view.getByRole('button', { name: 'Visual order' })).toBeInTheDocument()
+    expect(fake.owners).toHaveLength(1)
   })
 
   it('shows none when the symbol is flat and has no working order', async () => {
