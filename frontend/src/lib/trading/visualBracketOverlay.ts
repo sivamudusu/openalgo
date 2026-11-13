@@ -81,6 +81,7 @@ export class VisualBracketOverlay implements IPrimitive {
     const active = state.status === 'active' || state.status === 'exiting'
 
     ctx.save()
+    ctx.scale(rc.dpr, rc.dpr)
     ctx.beginPath()
     ctx.rect(0, 0, width, rc.plotHeight)
     ctx.clip()
