@@ -653,3 +653,57 @@ jobs:
           exit-code: '0'
           severity: 'CRITICAL,HIGH'
           format: 'table'
+
+  # Pull the image docker-manifest just published and recreate the AWS
+  # container. The host keeps its .env and named volumes; only the image
+  # changes. The branch filter stays on main because this repository's
+  # default branch is main.
+  #
+  # Required repository secrets:
+  #   AWS_HOST, AWS_USER, AWS_SSH_KEY
+  #   AWS_PORT     optional, defaults to 22
+  #   AWS_APP_DIR  optional, defaults to /home/ubuntu/openalgo
+  deploy-aws:
+    name: Deploy to AWS
+    needs: docker-manifest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      AWS_APP_DIR: ${{ secrets.AWS_APP_DIR }}
+    steps:
+      - name: Pull and restart on AWS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_KEY }}
+          port: ${{ secrets.AWS_PORT || 22 }}
+          envs: DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,AWS_APP_DIR
+          script_stop: true
+          script: |
+            set -euo pipefail
+            APP_DIR="${AWS_APP_DIR:-/home/ubuntu/openalgo}"
+            IMAGE="${DOCKERHUB_USERNAME}/openalgo:latest"
+
+            echo "$DOCKERHUB_TOKEN" | sudo -n docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+            sudo -n docker pull "$IMAGE"
+            sudo -n docker tag "$IMAGE" openalgo:latest
+
+            cd "$APP_DIR"
+            sudo -n docker compose up -d --no-build --force-recreate
+
+            for attempt in $(seq 1 60); do
+              status="$(sudo -n docker inspect -f '{{.State.Health.Status}}' openalgo-web 2>/dev/null || true)"
+              if [ "$status" = "healthy" ]; then
+                echo "openalgo-web is healthy"
+                exit 0
+              fi
+              sleep 5
+            done
+
+            echo "openalgo-web did not become healthy"
+            sudo -n docker logs --tail 80 openalgo-web
+            exit 1
