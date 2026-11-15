@@ -30,7 +30,10 @@ export interface OptionChainOverlaySettings {
 
 const DEFAULT_SETTINGS: OptionChainOverlaySettings = {
   metric: 'oi',
-  strikeCount: 10,
+  // Fifteen strikes each side of the money, the same window the Sahasra panel
+  // reads. The level map is computed from the chain being displayed, so the
+  // two surfaces only name the same walls when they read the same window.
+  strikeCount: 15,
   showValues: false,
   showLevels: true,
   showVelocity: false,

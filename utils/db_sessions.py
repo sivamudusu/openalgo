@@ -60,6 +60,7 @@ SCOPED_SESSION_MODULES = [
     ("database.strategy_book_db", "db_session"),
     ("database.strategy_module_db", "db_session"),
     ("database.visual_bracket_db", "db_session"),
+    ("database.sahasra_signal_db", "db_session"),
     ("database.oauth_db", "db_session"),
     ("database.whatsapp_db", "db_session"),
     ("database.agent_db", "db_session"),

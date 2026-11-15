@@ -23,8 +23,8 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { sahasraApi, type SahasraLevels, type SahasraUnderlying } from '@/api/sahasra'
-import { lowIvApi, type LowIVStrategyTag } from '@/api/low-iv'
+import { type LowIVStrategyTag, lowIvApi } from '@/api/low-iv'
+import { type SahasraLevels, type SahasraUnderlying, sahasraApi } from '@/api/sahasra'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -56,6 +56,7 @@ const VARIANTS = {
 const STATE_TEXT: Record<string, string> = {
   breakout_up: 'Breakout above resistance — long CE per the plan',
   breakdown: 'Breakdown below support — long PE per the plan',
+  rejection: 'Resistance reached and handed back — long PE per the plan',
   support_bounce: 'Tagged support and held — bounce long setup',
   inside_zone: 'Inside the S–R range — no-trade zone, wait for the break',
   above_resistance: 'Holding above resistance — breakout already in motion',
@@ -68,6 +69,15 @@ const STATE_TEXT: Record<string, string> = {
 const ENTRY_OPEN_MIN = 9 * 60 + 15
 const ENTRY_CLOSE_MIN = 14 * 60 + 30
 const COOLDOWN_MIN = 30
+
+/** Map an exit reason onto the outcome the signal log records. */
+function outcomeFor(reason: string): string {
+  if (reason.startsWith('target')) return 'target'
+  if (reason.startsWith('premium stop')) return 'stop'
+  if (reason.startsWith('max-hold')) return 'max_hold'
+  if (reason.startsWith('range reclaimed')) return 'reclaim'
+  return 'stop'
+}
 
 interface SahPos {
   symbol: string
@@ -133,7 +143,6 @@ function nextLevel(
 
 export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVariant }) {
   const { underlying, storage, strategy, label } = VARIANTS[variant]
-  const [lots, setLots] = useState(1)
   const [busy, setBusy] = useState(false)
   const [orderError, setOrderError] = useState<string | null>(null)
   const [autoMode, setAutoMode] = useState(() => {
@@ -152,15 +161,27 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
   const [entriesLog, setEntriesLog] = useState<EntriesLog>(() =>
     loadJSON<EntriesLog>(`${storage}.entries`, { date: todayStr(), count: 0, symbols: [] })
   )
-  const [maxEntries, setMaxEntries] = useState(() =>
-    Number(loadJSON(`${storage}.maxEntries`, 3))
+  const [maxEntries, setMaxEntries] = useState(() => Number(loadJSON(`${storage}.maxEntries`, 3)))
+  const [maxHoldMin, setMaxHoldMin] = useState(() => Number(loadJSON(`${storage}.maxHold`, 30)))
+  const [premStopPct, setPremStopPct] = useState(() => Number(loadJSON(`${storage}.premStop`, 15)))
+  /** The rupee risk one position may lose, from which the size follows. */
+  const [riskPerTrade, setRiskPerTrade] = useState(() =>
+    Number(loadJSON(`${storage}.riskPerTrade`, 500))
   )
-  const [maxHoldMin, setMaxHoldMin] = useState(() =>
-    Number(loadJSON(`${storage}.maxHold`, 30))
+  /** The rupee loss the day may reach before the loop stops opening positions. */
+  const [dailyLossCap, setDailyLossCap] = useState(() =>
+    Number(loadJSON(`${storage}.dailyLossCap`, 2000))
   )
-  const [premStopPct, setPremStopPct] = useState(() =>
-    Number(loadJSON(`${storage}.premStop`, 15))
+  /** The loss the day has already taken, in rupees. */
+  const [dayLossLog, setDayLossLog] = useState(() =>
+    loadJSON<{ date: string; loss: number }>(`${storage}.dayLoss`, {
+      date: todayStr(),
+      loss: 0,
+    })
   )
+  /** The signal row the open position came from, so its outcome can be logged. */
+  const [signalId, setSignalId] = useState<number | null>(null)
+  const dayLoss = dayLossLog.date === todayStr() ? dayLossLog.loss : 0
   const [autoBook, setAutoBook] = useState<{
     qty: number
     avg_price: number
@@ -207,10 +228,19 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
       localStorage.setItem(`${storage}.maxEntries`, String(maxEntries))
       localStorage.setItem(`${storage}.maxHold`, String(maxHoldMin))
       localStorage.setItem(`${storage}.premStop`, String(premStopPct))
+      localStorage.setItem(`${storage}.riskPerTrade`, String(riskPerTrade))
+      localStorage.setItem(`${storage}.dailyLossCap`, String(dailyLossCap))
     } catch {
       /* storage unavailable */
     }
-  }, [maxEntries, maxHoldMin, premStopPct, storage])
+  }, [maxEntries, maxHoldMin, premStopPct, riskPerTrade, dailyLossCap, storage])
+  useEffect(() => {
+    try {
+      localStorage.setItem(`${storage}.dayLoss`, JSON.stringify(dayLossLog))
+    } catch {
+      /* storage unavailable */
+    }
+  }, [dayLossLog, storage])
 
   const recordEntry = (sym: string) => {
     setEntriesLog((prev) => {
@@ -223,6 +253,15 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
     })
   }
 
+  /** Add what a closed position lost to the day's total. */
+  const recordDayLoss = useCallback((rupees: number) => {
+    if (rupees >= 0) return
+    setDayLossLog((prev) => {
+      const base = prev.date === todayStr() ? prev : { date: todayStr(), loss: 0 }
+      return { date: base.date, loss: base.loss + Math.abs(rupees) }
+    })
+  }, [])
+
   const levelsQ = useQuery({
     queryKey: ['sahasra-levels', underlying],
     queryFn: () => sahasraApi.getLevels(underlying),
@@ -234,6 +273,12 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
     refetchInterval: 30000,
   })
   const data = signalQ.data?.data ?? levelsQ.data?.data ?? null
+  const evidenceQ = useQuery({
+    queryKey: ['sahasra-evidence', underlying],
+    queryFn: () => sahasraApi.getEvidence(underlying),
+    refetchInterval: 60000,
+  })
+  const evidence = evidenceQ.data?.data ?? null
 
   const wsSymbols = [
     { symbol: underlying, exchange: 'NSE_INDEX' },
@@ -263,7 +308,16 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
     refreshBook(sym)
     const t = setInterval(() => refreshBook(sym), autoPos?.estimated ? 5000 : 15000)
     return () => clearInterval(t)
-  }, [autoPos?.symbol, autoPos?.estimated, autoMode, autoPos, data?.atm_ce_symbol, refreshBook])
+  }, [
+    autoPos?.symbol,
+    autoPos?.estimated,
+    autoPos?.entryTs,
+    autoPos?.qty,
+    autoMode,
+    autoPos,
+    data?.atm_ce_symbol,
+    refreshBook,
+  ])
 
   useEffect(() => {
     if (!autoPos || !autoBook) return
@@ -282,25 +336,38 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
     }
     if (Object.keys(updates).length > 0) setAutoPos({ ...autoPos, ...updates })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoBook])
+  }, [autoBook, autoPos, autoPos?.estimated, autoPos?.entryTs, autoPos?.qty, label])
 
   // Auto entry on 15m-bar state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the entry fires on the 15m state, not on every render. The helpers it reads are recreated each render, so listing them would re-fire it.
   useEffect(() => {
     if (!autoMode || autoPos || !data || firingRef.current) return
     if (
       data.state !== 'breakout_up' &&
       data.state !== 'breakdown' &&
+      data.state !== 'rejection' &&
       data.state !== 'support_bounce'
     )
       return
-    // Faithful model only: breakouts and bounces take the plan leg
-    // (breakdown alone goes PE). Inside-zone momentum lives in the separate
-    // Momentum Scalping section — this one respects his no-trade zone.
-    const side: 'CE' | 'PE' = data.state === 'breakdown' ? 'PE' : 'CE'
-    if ((data.regime === 'bearish' && side === 'CE') || (data.regime === 'bullish' && side === 'PE'))
+    // Faithful model only: breakouts, bounces and rejections take the plan
+    // leg (breakdown and rejection alone go PE). Inside-zone momentum lives
+    // in the separate Momentum Scalping section — this one respects his
+    // no-trade zone.
+    const side: 'CE' | 'PE' = data.state === 'breakdown' || data.state === 'rejection' ? 'PE' : 'CE'
+    if (
+      (data.regime === 'bearish' && side === 'CE') ||
+      (data.regime === 'bullish' && side === 'PE')
+    )
       return
     if (maxEntries > 0 && entriesLog.count >= maxEntries) {
       setOrderError(`${label} auto blocked: day cap ${entriesLog.count}/${maxEntries} reached`)
+      return
+    }
+    if (dayLoss >= dailyLossCap) {
+      setOrderError(
+        `${label} auto blocked: the day's loss (${Math.round(dayLoss)}) reached the cap (${dailyLossCap})`
+      )
       return
     }
     if (autoBook && autoBook.qty !== 0) return // already holding — no double-up
@@ -311,10 +378,21 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
     if (!sym) return
     if (peerHoldsSymbol(sym, `${storage}.autoPos`)) return // a peer loop holds this leg
     const lot = data.atm_lotsize && data.atm_lotsize > 0 ? data.atm_lotsize : 30
-    const qty = lots * lot
     const entryLtp = tickOf(sym, 'NFO')
     if (!entryLtp) {
       setOrderError(`${label} auto blocked: no live price for the ATM leg yet`)
+      return
+    }
+    // Size by the risk the trader accepts, not by a fixed lot count. The
+    // premium stop is what the position can lose, so the quantity is the risk
+    // divided by what one unit can lose.
+    const riskPerUnit = (premStopPct / 100) * entryLtp
+    const units = riskPerUnit > 0 ? Math.floor(riskPerTrade / riskPerUnit) : 0
+    const qty = Math.floor(units / lot) * lot
+    if (qty <= 0) {
+      setOrderError(
+        `${label} auto blocked: a risk of ${riskPerTrade} buys less than one lot at a ${premStopPct}% premium stop`
+      )
       return
     }
     const entrySpot = spotLtp ?? data.spot ?? 0
@@ -326,7 +404,15 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
     firingRef.current = true
     setBusy(true)
     lowIvApi
-      .placeOrder({ symbol: sym, exchange: 'NFO', action: 'BUY', product: 'MIS', quantity: qty, ltp: entryLtp, strategy })
+      .placeOrder({
+        symbol: sym,
+        exchange: 'NFO',
+        action: 'BUY',
+        product: 'MIS',
+        quantity: qty,
+        ltp: entryLtp,
+        strategy,
+      })
       .then((res) => {
         if (res.status === 'success') {
           setAutoPos({
@@ -343,6 +429,28 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
             estimated: true,
           })
           recordEntry(sym)
+          // Keep the signal so the model's live record can be read off. A
+          // signal that cannot be written must not stop the trade.
+          sahasraApi
+            .recordSignal({
+              underlying,
+              state: data.state ?? '',
+              side,
+              confirmed: data.confirmation?.confirmed ?? false,
+              level_map: data,
+              market_context: data.market_context ?? null,
+              entry_spot: entrySpot,
+              entry_premium: entryLtp,
+              quantity: qty,
+            })
+            .then((logged) => {
+              if (logged.status === 'success' && logged.data?.id) {
+                setSignalId(logged.data.id)
+              }
+            })
+            .catch(() => {
+              /* the log is evidence, not a gate */
+            })
           setOrderError(null)
           showToast.success(`${label} auto BUY ${sym} x${qty} (fill confirming…)`)
           refreshBook(sym)
@@ -358,10 +466,25 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
         setBusy(false)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.state, autoMode, autoPos, data, lastAutoExitTs, entriesLog.count])
+  }, [
+    data?.state,
+    autoMode,
+    autoPos,
+    data,
+    lastAutoExitTs,
+    entriesLog.count,
+    dayLoss,
+    dailyLossCap,
+    riskPerTrade,
+    premStopPct,
+    autoBook,
+    spotLtp,
+  ])
 
   // Auto exits: structural target (next OI level), structural SL (range
   // reclaim on 15m state), plus our safety rails (premium stop, max hold).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the exit watches the live book, not every render. The helpers it reads are recreated each render, so listing them would re-fire it.
   useEffect(() => {
     if (!autoPos || closingRef.current) return
     if (autoPos.estimated) return
@@ -397,8 +520,7 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
       return
     }
     if (autoBook && autoBook.qty === 0) return // reconcile clears tracking
-    const exitQty =
-      autoBook && autoBook.qty > 0 ? Math.min(autoPos.qty, autoBook.qty) : autoPos.qty
+    const exitQty = autoBook && autoBook.qty > 0 ? Math.min(autoPos.qty, autoBook.qty) : autoPos.qty
     if (exitQty <= 0) return
     if (Date.now() - lastCloseAttemptRef.current < 5000) return
     lastCloseAttemptRef.current = Date.now()
@@ -416,6 +538,15 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
       .then((res) => {
         if (res.status === 'success') {
           showToast.success(`${label} exit (${reason}) ${autoPos.symbol} @ ${ltp.toFixed(2)}`)
+          recordDayLoss((pnl / 100) * autoPos.entry * exitQty)
+          if (signalId != null) {
+            sahasraApi
+              .closeSignal({ id: signalId, outcome: outcomeFor(reason), pnl_pct: pnl })
+              .catch(() => {
+                /* the log is evidence, not a gate */
+              })
+            setSignalId(null)
+          }
           setAutoPos(null)
           setLastAutoExitTs(Date.now())
           setOrderError(null)
@@ -424,14 +555,27 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
         }
       })
       .catch((e) => {
-        setOrderError(`${label} exit failed (${reason}): ${e instanceof Error ? e.message : 'unknown error'}`)
+        setOrderError(
+          `${label} exit failed (${reason}): ${e instanceof Error ? e.message : 'unknown error'}`
+        )
       })
       .finally(() => {
         closingRef.current = false
         setBusy(false)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticks, autoPos, data?.state])
+  }, [
+    ticks,
+    autoPos,
+    data?.state,
+    signalId,
+    autoBook,
+    premStopPct,
+    maxHoldMin,
+    label,
+    spotLtp,
+    recordDayLoss,
+  ])
 
   const state = data?.state
   const blocked = data?.regime_blocked && data?.side
@@ -450,6 +594,33 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
         )}
         {data?.support != null && <Badge variant="outline">S {data.support}</Badge>}
         {data?.resistance != null && <Badge variant="outline">R {data.resistance}</Badge>}
+        {data?.magnet != null && <Badge variant="outline">Magnet {data.magnet}</Badge>}
+        {data?.no_trade_zone && (
+          <Badge variant="secondary">
+            No trade {data.no_trade_zone.low}–{data.no_trade_zone.high}
+          </Badge>
+        )}
+        {data?.market_context?.gamma_flip_strike != null && (
+          <Badge
+            variant="outline"
+            title={
+              data.market_context.dealer_regime === 'amplifying'
+                ? 'Below this strike the dealers are net short gamma, which amplifies a move. A wall tends to give way.'
+                : 'Above this strike the dealers are net long gamma, which damps a move. A wall tends to hold.'
+            }
+          >
+            Flip {data.market_context.gamma_flip_strike} ·{' '}
+            {data.market_context.dealer_regime === 'amplifying' ? 'amplifies' : 'dampens'}
+          </Badge>
+        )}
+        {data?.market_context?.expected_move && (
+          <Badge
+            variant="outline"
+            title="The standard-deviation sized range for the session, from the at-the-money volatility."
+          >
+            ±{data.market_context.expected_move.intraday.sigma_move}
+          </Badge>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
           <span className="text-xs text-muted-foreground">Manual</span>
           <Switch checked={autoMode} onCheckedChange={setAutoMode} />
@@ -466,6 +637,18 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
           Regime filter blocks this side under {data?.regime} PCR — shown, not placed, by design.
         </p>
       )}
+      {data?.confirmation && (
+        <p className="text-xs text-muted-foreground">
+          {data.confirmation.candle_ok ? 'Confirmed' : 'Not confirmed'}:{' '}
+          {data.confirmation.candle_text} {data.confirmation.volume_text}
+        </p>
+      )}
+      {data?.market_context?.resistance_within_reach === false && (
+        <p className="text-xs text-muted-foreground">
+          The resistance is outside the session's expected move, so it is not a level to wait for
+          today.
+        </p>
+      )}
 
       {autoMode ? (
         <div className="rounded-md border p-3 text-sm">
@@ -473,45 +656,99 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
             Auto ON {busy ? '(working…)' : '(watching 15m state)'}.
             {autoPos ? (
               <span>
-                {' '}Holding <span className="font-mono">{autoPos.symbol}</span> x{autoPos.qty} @{' '}
+                {' '}
+                Holding <span className="font-mono">{autoPos.symbol}</span> x{autoPos.qty} @{' '}
                 {autoPos.estimated ? 'fill confirming…' : autoPos.entry.toFixed(2)}
                 {autoPnl != null && !autoPos.estimated && (
                   <span className={autoPnl >= 0 ? 'text-green-600' : 'text-red-600'}>
-                    {' '}({autoPnl >= 0 ? '+' : ''}{autoPnl.toFixed(2)}%)
+                    {' '}
+                    ({autoPnl >= 0 ? '+' : ''}
+                    {autoPnl.toFixed(2)}%)
                   </span>
                 )}
                 <span className="text-muted-foreground">
-                  {' '}· tgt {autoPos.targetSpot ?? '—'} / reclaim SL / -{premStopPct}% / {maxHoldMin}m
+                  {' '}
+                  · tgt {autoPos.targetSpot ?? '—'} / reclaim SL / -{premStopPct}% / {maxHoldMin}m
                 </span>
               </span>
             ) : (
-              <span className="text-muted-foreground"> Flat — waiting for breakout / breakdown / bounce.</span>
+              <span className="text-muted-foreground">
+                {' '}
+                Flat — waiting for breakout / breakdown / bounce.
+              </span>
             )}
-            <span className="text-muted-foreground"> · entries today {entriesLog.count}/{maxEntries}</span>
+            <span className="text-muted-foreground">
+              {' '}
+              · entries today {entriesLog.count}/{maxEntries}
+            </span>
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
             <label>
-              Max entries<Input type="number" min={1} max={10} value={maxEntries} onChange={(e) => setMaxEntries(Math.max(1, Math.min(10, Number(e.target.value) || 3)))} />
+              Max entries
+              <Input
+                type="number"
+                min={1}
+                max={10}
+                value={maxEntries}
+                onChange={(e) =>
+                  setMaxEntries(Math.max(1, Math.min(10, Number(e.target.value) || 3)))
+                }
+              />
             </label>
             <label>
-              Max hold (m)<Input type="number" min={5} max={120} value={maxHoldMin} onChange={(e) => setMaxHoldMin(Math.max(5, Math.min(120, Number(e.target.value) || 30)))} />
+              Max hold (m)
+              <Input
+                type="number"
+                min={5}
+                max={120}
+                value={maxHoldMin}
+                onChange={(e) =>
+                  setMaxHoldMin(Math.max(5, Math.min(120, Number(e.target.value) || 30)))
+                }
+              />
             </label>
             <label>
-              Prem stop %<Input type="number" min={5} max={50} value={premStopPct} onChange={(e) => setPremStopPct(Math.max(5, Math.min(50, Number(e.target.value) || 15)))} />
+              Prem stop %
+              <Input
+                type="number"
+                min={5}
+                max={50}
+                value={premStopPct}
+                onChange={(e) =>
+                  setPremStopPct(Math.max(5, Math.min(50, Number(e.target.value) || 15)))
+                }
+              />
             </label>
           </div>
-          <div className="mt-2 flex items-center gap-2 text-xs">
-            <Input
-              type="number"
-              min={1}
-              max={20}
-              value={lots}
-              onChange={(e) => setLots(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
-            />
-            <span className="text-muted-foreground">
-              lots{data?.atm_lotsize ? ` × ${data.atm_lotsize}` : ''}
-            </span>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+            <label>
+              Risk per trade (₹)
+              <Input
+                type="number"
+                min={100}
+                max={100000}
+                step={100}
+                value={riskPerTrade}
+                onChange={(e) => setRiskPerTrade(Math.max(100, Number(e.target.value) || 500))}
+              />
+            </label>
+            <label>
+              Day loss cap (₹)
+              <Input
+                type="number"
+                min={100}
+                max={500000}
+                step={100}
+                value={dailyLossCap}
+                onChange={(e) => setDailyLossCap(Math.max(100, Number(e.target.value) || 2000))}
+              />
+            </label>
           </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Size follows the risk: the premium stop is what one unit can lose, so a ₹{riskPerTrade}{' '}
+            risk buys the quantity that stop can carry. The day's loss is {Math.round(dayLoss)} of a{' '}
+            {dailyLossCap} cap.
+          </p>
         </div>
       ) : (
         autoPos && (
@@ -534,6 +771,16 @@ export function SahasraSection({ variant = 'BANKNIFTY' }: { variant?: SahasraVar
         Levels refresh every 30s from the live chain; 15m state uses closed bars only.
         {data?.expiry && ` Expiry ${data.expiry}.`} Target = next OI level; SL = range reclaim.
       </p>
+      {evidence && evidence.closed > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Live record: {evidence.closed} closed of {evidence.signals} signals, {evidence.targets}{' '}
+          reached target
+          {evidence.enough_evidence
+            ? ` · hit rate ${(evidence.hit_rate ?? 0) * 100}%`
+            : ` · a rate is not claimed until ${evidence.evidence_target} closed signals`}
+          .
+        </p>
+      )}
     </div>
   )
 }

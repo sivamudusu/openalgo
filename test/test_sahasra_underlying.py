@@ -123,7 +123,8 @@ def test_expired_cache_recomputes_only_that_underlying(monkeypatch):
 
     sahasra._get_levels("key", "BANKNIFTY")
     sahasra._get_levels("key", "NIFTY")
-    sahasra._levels_cache["NIFTY"]["ts"] = time.time() - sahasra.LEVELS_TTL_SECONDS - 1
+    # Expire one slot, the way the time-to-live would.
+    sahasra._levels_cache.invalidate("NIFTY")
 
     assert sahasra._get_levels("key", "BANKNIFTY")[0]["underlying"] == "BANKNIFTY"
     assert sahasra._get_levels("key", "NIFTY")[0]["underlying"] == "NIFTY"
@@ -158,6 +159,64 @@ def test_levels_route_rejects_an_unsupported_underlying(client):
     assert response.status_code == 400
     assert response.get_json()["message"] == "Unsupported underlying"
     assert calls == []
+
+
+def test_levels_route_reads_the_map_the_chain_carries(client):
+    """The chain's own map is used when it carries one."""
+    test_client, calls = client
+
+    response = test_client.get("/sahasra/api/levels?underlying=NIFTY")
+
+    assert response.status_code == 200
+    assert response.get_json()["data"]["underlying"] == "NIFTY"
+
+
+def test_levels_fall_back_to_a_map_built_here(monkeypatch):
+    """A chain that arrives without a map still produces a ladder.
+
+    The ladder's rows are named for the response (``call_oi`` and ``put_oi``),
+    and the fallback reads them under those names. Getting it wrong breaks the
+    panel on any chain that does not carry a map.
+    """
+    monkeypatch.setattr(sahasra, "_get_api_key", lambda: "test-key")
+    monkeypatch.setattr(
+        sahasra,
+        "get_expiry_dates",
+        lambda **kwargs: (True, {"data": ["27-NOV-26"]}, 200),
+    )
+    chain = {
+        "status": "success",
+        "underlying": "NIFTY",
+        "underlying_ltp": 25100.0,
+        "atm_strike": 25100,
+        "expiry_date": "27NOV26",
+        "chain": [
+            {
+                "strike": 25000,
+                "ce": {"oi": 270_000_000, "label": "OTM", "symbol": "C25000", "lotsize": 75},
+                "pe": {"oi": 813_000_000, "label": "ITM", "symbol": "P25000", "lotsize": 75},
+            },
+            {
+                "strike": 25100,
+                "ce": {"oi": 446_000_000, "label": "ATM", "symbol": "C25100", "lotsize": 75},
+                "pe": {"oi": 730_000_000, "label": "ATM", "symbol": "P25100", "lotsize": 75},
+            },
+            {
+                "strike": 25200,
+                "ce": {"oi": 84_200_000, "label": "OTM", "symbol": "C25200", "lotsize": 75},
+                "pe": {"oi": 10_500_000, "label": "ITM", "symbol": "P25200", "lotsize": 75},
+            },
+        ],
+    }
+    monkeypatch.setattr(sahasra, "get_option_chain", lambda **kwargs: (True, chain, 200))
+
+    data, err = sahasra._compute_levels("test-key", "NIFTY")
+
+    assert err is None
+    assert data["support"] == 25000
+    assert data["resistance"] == 25200
+    assert [row["call_oi"] for row in data["ladder"]] == [270_000_000, 446_000_000, 84_200_000]
+    assert [row["put_oi"] for row in data["ladder"]] == [813_000_000, 730_000_000, 10_500_000]
 
 
 def test_signal_route_reads_history_for_the_requested_underlying(client):

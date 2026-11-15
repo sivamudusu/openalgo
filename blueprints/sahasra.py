@@ -1,12 +1,26 @@
 """Sahasra (YouTuber) OI model — monitoring + signal backend for /trading.
 
-Encodes the distilled rules (R1/R2, citations in agentic_trading_v2
-output/claims): support = nearest put-OI peak at/below ATM, resistance =
-nearest call-OI peak at/above ATM, PCR regime (<0.7 bearish, 0.7-1.0
-neutral, >1.0 bullish). Levels come from the LIVE chain (what he reads on
-air), cached 60s per underlying. The same rules serve BANKNIFTY and NIFTY;
-the caller selects one with ?underlying=. Manual trading reuses
-POST /lowiv/api/order (NFO MARKET).
+The level map comes from :mod:`services.level_map_service`, which is the one
+resolver the Sahasra panel and the chart overlay both read, so the two cannot
+disagree about where the walls are.
+
+It answers, for each side of the money:
+
+- The **headline wall**: the largest open interest on that side, at or below
+  the underlying for support and above it for resistance. The panel used to
+  rank candidate strikes by proximity to the money first, so a small bump
+  near the money beat a large wall further away, and the two surfaces
+  disagreed about the same chain.
+- The **nearest wall** and the **next wall** on that side, which is where a
+  target goes.
+- The **magnet**: the strike whose weaker side carries the most interest,
+  where price balances rather than travelling.
+- The **no-trade zone** between the two headline walls.
+
+PCR regime (<0.7 bearish, 0.7-1.0 neutral, >1.0 bullish) is read from the
+live chain (what the model reads on air), cached 60s per underlying. The same
+rules serve BANKNIFTY and NIFTY; the caller selects one with ?underlying=.
+Manual trading reuses POST /lowiv/api/order (NFO MARKET).
 """
 
 import time
@@ -16,12 +30,24 @@ import pytz
 from flask import Blueprint, jsonify, request, session
 
 from database.auth_db import get_api_key_for_tradingview
+from database.sahasra_signal_db import (
+    close_signal as close_sahasra_signal,
+)
+from database.sahasra_signal_db import (
+    record_signal as record_sahasra_signal,
+)
+from database.sahasra_signal_db import (
+    signal_evidence as sahasra_evidence,
+)
 from database.settings_db import get_analyze_mode
 from services.expiry_service import get_expiry_dates
 from services.history_service import get_history
+from services.level_map_service import build_level_map
 from services.option_chain_service import get_option_chain
+from services.signal_confirmation import evaluate_confirmation
 from utils.logging import get_logger
 from utils.session import check_session_validity
+from utils.thread_safe_cache import LockedTTLCache
 
 logger = get_logger(__name__)
 
@@ -40,7 +66,9 @@ LEVELS_TTL_SECONDS = 60
 # One cache slot per underlying: the two chains refresh independently, and a
 # single slot would let a NIFTY request evict the BANKNIFTY levels (or worse,
 # serve NIFTY levels to the BANKNIFTY panel) every time the panels alternate.
-_levels_cache: dict[str, dict] = {}
+# LockedTTLCache, because the blueprint runs under a thread pool and a plain
+# dict mutated from two requests is a race.
+_levels_cache = LockedTTLCache(maxsize=8, ttl=LEVELS_TTL_SECONDS)
 
 
 def _resolve_underlying(value: str | None) -> str | None:
@@ -56,30 +84,15 @@ def _get_api_key():
     return get_api_key_for_tradingview(username)
 
 
-def _nearest_peak(strikes, oi_by_strike, atm, side):
-    """Nearest local-maximum OI strike at/below (support) or at/above ATM."""
-    ordered = sorted(strikes)
-    best, best_oi = None, -1
-    for i, s in enumerate(ordered):
-        if side == "below" and s > atm:
-            continue
-        if side == "above" and s < atm:
-            continue
-        oi = oi_by_strike.get(s, 0)
-        lo = oi_by_strike.get(ordered[i - 1]) if i > 0 else None
-        hi = oi_by_strike.get(ordered[i + 1]) if i < len(ordered) - 1 else None
-        if lo is not None and oi <= lo:
-            continue
-        if hi is not None and oi <= hi:
-            continue
-        dist = abs(s - atm)
-        if best is None or dist < abs(best - atm) or (dist == abs(best - atm) and oi > best_oi):
-            best, best_oi = s, oi
-    if best is None:  # fallback: side max
-        pool = [s for s in ordered if (s <= atm if side == "below" else s >= atm)]
-        if pool:
-            best = max(pool, key=lambda s: oi_by_strike.get(s, 0))
-    return best
+class LevelsUnavailable(Exception):
+    """The level map could not be built."""
+
+
+def _to_int(value, default=0):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _compute_levels(api_key, underlying):
@@ -99,7 +112,7 @@ def _compute_levels(api_key, underlying):
         strike_count=15,
         api_key=api_key,
         with_quotes=True,
-        with_greeks=False,
+        with_greeks=True,
     )
     if not ok or not isinstance(chain_resp, dict):
         msg = chain_resp.get("message") if isinstance(chain_resp, dict) else "chain failed"
@@ -108,72 +121,93 @@ def _compute_levels(api_key, underlying):
     atm = chain_resp.get("atm_strike")
     if not chain or atm is None:
         return None, "Empty chain"
-    puts, calls, strikes = {}, {}, []
+    market_context = chain_resp.get("market_context") or {}
+    rows = []
     atm_ce_symbol, atm_pe_symbol, atm_lotsize = None, None, None
     for row in chain:
         try:
-            s = int(float(row.get("strike")))
+            strike = float(row.get("strike"))
         except (TypeError, ValueError):
             continue
-        strikes.append(s)
         ce, pe = row.get("ce") or {}, row.get("pe") or {}
-        try:
-            puts[s] = int(float(pe.get("oi") or 0))
-        except (TypeError, ValueError):
-            puts[s] = 0
-        try:
-            calls[s] = int(float(ce.get("oi") or 0))
-        except (TypeError, ValueError):
-            calls[s] = 0
+        rows.append(
+            {
+                "strike": strike,
+                "ce_oi": _to_int(ce.get("oi")),
+                "pe_oi": _to_int(pe.get("oi")),
+                "ce_symbol": ce.get("symbol"),
+                "pe_symbol": pe.get("symbol"),
+                "lotsize": _to_int(ce.get("lotsize")) or _to_int(pe.get("lotsize")) or None,
+            }
+        )
         if ce.get("label") == "ATM":
             atm_ce_symbol = ce.get("symbol")
             atm_pe_symbol = pe.get("symbol")
-            try:
-                atm_lotsize = int(ce.get("lotsize") or pe.get("lotsize") or 0) or None
-            except (TypeError, ValueError):
-                atm_lotsize = None
-    support = _nearest_peak(strikes, puts, atm, "below")
-    resistance = _nearest_peak(strikes, calls, atm, "above")
-    total_put = sum(puts.values())
-    total_call = sum(calls.values())
-    ladder = [
-        {"strike": s, "call_oi": calls.get(s, 0), "put_oi": puts.get(s, 0)} for s in sorted(strikes)
-    ]
-    pcr = (total_put / total_call) if total_call > 0 else None
-    if pcr is not None and pcr < PCR_BEARISH_MAX:
-        regime = "bearish"
-    elif pcr is not None and pcr > PCR_BULLISH_MIN:
-        regime = "bullish"
-    else:
-        regime = "neutral"
+            atm_lotsize = _to_int(ce.get("lotsize")) or _to_int(pe.get("lotsize")) or None
+
+    spot = chain_resp.get("underlying_ltp")
+    # The chain service already computed the canonical map from this chain, so
+    # the panel and the chart overlay read the same numbers. The local rebuild
+    # is the fallback for a chain that arrives without one.
+    level_map = chain_resp.get("level_map") or build_level_map(
+        spot,
+        rows,
+        underlying=underlying,
+        expiry=expiry,
+        atm_strike=atm,
+    )
+    if level_map["support"] is None and level_map["resistance"] is None:
+        return None, "The chain carried no open interest to read a level from."
+
     return (
         {
             "underlying": underlying,
             "expiry": expiry,
             "atm_strike": atm,
-            "spot": chain_resp.get("underlying_ltp"),
-            "support": support,
-            "resistance": resistance,
-            "pcr": round(pcr, 3) if pcr is not None else None,
-            "regime": regime,
+            "spot": spot,
+            "support": level_map["support"],
+            "resistance": level_map["resistance"],
+            "nearest_support": level_map["nearest_support"],
+            "nearest_resistance": level_map["nearest_resistance"],
+            "next_support": level_map["next_support"],
+            "next_resistance": level_map["next_resistance"],
+            "magnet": level_map["magnet"],
+            "magnet_balance": level_map["magnet_balance"],
+            "no_trade_zone": level_map["no_trade_zone"],
+            "pcr": level_map["pcr"],
+            "regime": level_map["regime"],
             "atm_ce_symbol": atm_ce_symbol,
             "atm_pe_symbol": atm_pe_symbol,
             "atm_lotsize": atm_lotsize,
-            "ladder": ladder,
+            "ladder": [
+                {"strike": row["strike"], "call_oi": row["call_oi"], "put_oi": row["put_oi"]}
+                for row in level_map["ladder"]
+            ],
+            "warning": level_map["warning"],
+            "market_context": market_context,
             "mode": "analyze" if get_analyze_mode() else "live",
         }
     ), None
 
 
 def _get_levels(api_key, underlying):
-    now = time.time()
-    cached = _levels_cache.get(underlying) or {}
-    if cached.get("data") is not None and now - cached.get("ts", 0.0) < LEVELS_TTL_SECONDS:
-        return cached["data"], None
-    data, err = _compute_levels(api_key, underlying)
-    if data is not None:
-        _levels_cache[underlying] = {"data": data, "ts": now}
-    return data, err
+    """Return the cached level map for an underlying, computing it on a miss.
+
+    The cache is keyed by underlying, so the two panels never read each
+    other's levels. A load that overlapped an invalidation is still returned to
+    its caller; the cache simply does not store it.
+    """
+
+    def load():
+        data, err = _compute_levels(api_key, underlying)
+        if data is None:
+            raise LevelsUnavailable(err or "Levels unavailable")
+        return data
+
+    try:
+        return _levels_cache.get_or_load(underlying, load), None
+    except LevelsUnavailable as exc:
+        return None, str(exc)
 
 
 @sahasra_bp.route("/sahasra/api/levels", methods=["GET"])
@@ -190,6 +224,62 @@ def levels():
     if data is None:
         return jsonify({"status": "error", "message": err or "Levels unavailable"}), 502
     return jsonify({"status": "success", "data": data})
+
+
+@sahasra_bp.route("/sahasra/api/signal-log", methods=["POST"])
+@check_session_validity
+def record_signal():
+    """Record a signal the model produced, with the map that produced it.
+
+    Best effort by design: a signal that cannot be written must not stop the
+    trade, so the response says whether it was kept without failing the call.
+    """
+    underlying = _resolve_underlying((request.get_json(silent=True) or {}).get("underlying"))
+    if underlying is None:
+        return jsonify({"status": "error", "message": "Unsupported underlying"}), 400
+    payload = request.get_json(silent=True) or {}
+    state = str(payload.get("state") or "")
+    side = str(payload.get("side") or "")
+    if not state or side not in ("CE", "PE"):
+        return jsonify({"status": "error", "message": "The state and side are required"}), 400
+
+    signal_id = record_sahasra_signal(
+        underlying,
+        state,
+        side,
+        confirmed=bool(payload.get("confirmed")),
+        level_map=payload.get("level_map"),
+        market_context=payload.get("market_context"),
+        entry_spot=payload.get("entry_spot"),
+        entry_premium=payload.get("entry_premium"),
+        quantity=payload.get("quantity"),
+    )
+    return jsonify({"status": "success", "data": {"id": signal_id, "kept": signal_id is not None}})
+
+
+@sahasra_bp.route("/sahasra/api/signal-log/close", methods=["POST"])
+@check_session_validity
+def close_signal():
+    """Record what a signal turned into."""
+    payload = request.get_json(silent=True) or {}
+    signal_id = payload.get("id")
+    outcome = str(payload.get("outcome") or "")
+    if not signal_id or not outcome:
+        return jsonify(
+            {"status": "error", "message": "The signal id and outcome are required"}
+        ), 400
+    kept = close_sahasra_signal(signal_id, outcome, pnl_pct=payload.get("pnl_pct"))
+    return jsonify({"status": "success", "data": {"kept": kept}})
+
+
+@sahasra_bp.route("/sahasra/api/evidence", methods=["GET"])
+@check_session_validity
+def evidence():
+    """The live record: how many signals, and how many reached their target."""
+    underlying = _resolve_underlying(request.args.get("underlying"))
+    if underlying is None:
+        return jsonify({"status": "error", "message": "Unsupported underlying"}), 400
+    return jsonify({"status": "success", "data": sahasra_evidence(underlying)})
 
 
 @sahasra_bp.route("/sahasra/api/signal", methods=["GET"])
@@ -242,6 +332,7 @@ def signal():
                     "h": float(r["high"]),
                     "low": float(r["low"]),
                     "c": float(r["close"]),
+                    "v": float(r.get("volume") or 0),
                 }
             )
         except (TypeError, ValueError, KeyError):
@@ -252,11 +343,15 @@ def signal():
     if len(closed) < 2:
         return jsonify({"status": "success", "data": {**data, "state": "warming_up"}})
     bar, prev = closed[-1], closed[-2]
-    low, c, pc, o = bar["low"], bar["c"], prev["c"], bar["o"]
+    low, high, c, pc, o = bar["low"], bar["h"], bar["c"], prev["c"], bar["o"]
     if pc <= resistance < c:
         state, side = "breakout_up", "CE"
     elif pc >= support > c:
         state, side = "breakdown", "PE"
+    elif high >= resistance and c < resistance:
+        # The level was reached and handed back, so the wall held. This is the
+        # setup that buys a put at resistance.
+        state, side = "rejection", "PE"
     elif low <= support < c:
         state, side = "support_bounce", "CE"
     elif support < c < resistance:
@@ -269,6 +364,9 @@ def signal():
         state, side = "above_resistance", None
     else:
         state, side = "below_support", None
+
+    confirmation = evaluate_confirmation(state, side, bar, closed[:-1])
+
     regime = data["regime"]
     blocked = (regime == "bearish" and side == "CE") or (regime == "bullish" and side == "PE")
     return jsonify(
@@ -279,6 +377,7 @@ def signal():
                 "state": state,
                 "side": side,
                 "regime_blocked": blocked,
+                "confirmation": confirmation,
                 "bar": {**bar, "prev_close": pc},
             },
         }

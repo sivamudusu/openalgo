@@ -5,7 +5,7 @@ import {
   type OptionChainMetric,
   optionChainMetricValue,
 } from '@/lib/optionChainMetrics'
-import type { OptionChainResponse } from '@/types/option-chain'
+import type { OptionChainResponse, OptionLevelMap } from '@/types/option-chain'
 import {
   formatSignedCompact,
   formatSignedDecimal,
@@ -34,6 +34,17 @@ export interface OptionChainOverlayData {
   levels: OptionChainOverlayLevel[]
   maxCeStrike: number | null
   maxPeStrike: number | null
+  /**
+   * The server's canonical level map for this chain.
+   *
+   * The overlay draws its support and resistance lines from this rather than
+   * from its own scan of the ladder. The two used to be computed twice, under
+   * different rules, and the overlay and the Sahasra panel could disagree
+   * about the same chain: the panel ranked candidate strikes by proximity to
+   * the money before it ranked them by open interest, so a small bump near
+   * the money beat a large wall further away.
+   */
+  levelMap: OptionLevelMap | null
   velocity?: OiVelocityData | null
 }
 
@@ -54,6 +65,7 @@ export const DEFAULT_OPTION_CHAIN_OVERLAY_OPTIONS: OptionChainOverlayOptions = {
 const CE_COLOR = '#10b981'
 const PE_COLOR = '#f43f5e'
 const BREAK_COLOR = '#f59e0b'
+const MAGNET_COLOR = '#38bdf8'
 const FONT = '10px ui-sans-serif, system-ui, -apple-system, sans-serif'
 const RIGHT_PAD = 6
 const MIN_BAR_WIDTH = 60
@@ -74,6 +86,7 @@ export function overlayDataFromChain(
   }))
   const ceTotal = levels.reduce((sum, level) => sum + level.ceOi, 0)
   const peTotal = levels.reduce((sum, level) => sum + level.peOi, 0)
+  const levelMap = chain.level_map ?? null
   return {
     underlying: chain.underlying,
     expiry: chain.expiry_date,
@@ -81,8 +94,11 @@ export function overlayDataFromChain(
     atmStrike: chain.atm_strike,
     pcr: ceTotal > 0 ? peTotal / ceTotal : 0,
     levels,
-    maxCeStrike: maxOiStrike(levels, 'ce'),
-    maxPeStrike: maxOiStrike(levels, 'pe'),
+    // The server's map names the walls. Its own scan of the ladder is kept
+    // only as a fallback for a chain that arrives without one.
+    maxCeStrike: levelMap?.resistance ?? maxOiStrike(levels, 'ce'),
+    maxPeStrike: levelMap?.support ?? maxOiStrike(levels, 'pe'),
+    levelMap,
   }
 }
 
@@ -171,6 +187,9 @@ export function overlaySignature(
     data.pcr,
     data.maxCeStrike,
     data.maxPeStrike,
+    data.levelMap?.magnet ?? '',
+    data.levelMap?.no_trade_zone?.low ?? '',
+    data.levelMap?.no_trade_zone?.high ?? '',
     options.metric,
     options.showValues,
     options.showLevels,
@@ -278,9 +297,15 @@ export class OptionChainOverlay implements IPrimitive {
       }
     }
 
+    this.drawNoTradeZone(ctx, rc, data.levelMap)
+
     if (this.options.showLevels) {
       this.drawLevel(ctx, rc, data.maxCeStrike, CE_COLOR, 'R')
       this.drawLevel(ctx, rc, data.maxPeStrike, PE_COLOR, 'S')
+    }
+
+    if (data.levelMap?.magnet != null) {
+      this.drawMagnet(ctx, rc, data.levelMap.magnet)
     }
 
     if (velocity?.windowReady) {
@@ -410,6 +435,72 @@ export class OptionChainOverlay implements IPrimitive {
     ctx.fillRect(2, labelY - 11, width + 4, 12)
     ctx.globalAlpha = 1
     ctx.fillStyle = color
+    ctx.fillText(text, 4, labelY)
+    ctx.restore()
+  }
+
+  /**
+   * Shade the stretch between the two walls.
+   *
+   * Price that sits between them is inside the range the open interest
+   * describes, and the model treats that as a place not to open a position.
+   */
+  private drawNoTradeZone(
+    ctx: CanvasRenderingContext2D,
+    rc: PrimitiveRenderContext,
+    map: OptionLevelMap | null
+  ) {
+    const zone = map?.no_trade_zone
+    if (!zone) return
+    const top = rc.priceScale.priceToY(zone.high)
+    const bottom = rc.priceScale.priceToY(zone.low)
+    if (!Number.isFinite(top) || !Number.isFinite(bottom)) return
+    if (bottom < -8 || top > rc.plotHeight + 8) return
+
+    ctx.save()
+    ctx.globalAlpha = 0.05
+    ctx.fillStyle = rc.theme.crosshair
+    ctx.fillRect(
+      0,
+      Math.max(0, top),
+      rc.plotWidth,
+      Math.min(rc.plotHeight, bottom) - Math.max(0, top)
+    )
+    ctx.restore()
+  }
+
+  /**
+   * The magnet: the strike whose weaker side carries the most interest.
+   *
+   * It is where neither side can push price through alone, so price tends to
+   * balance there rather than travel.
+   */
+  private drawMagnet(ctx: CanvasRenderingContext2D, rc: PrimitiveRenderContext, strike: number) {
+    const y = rc.priceScale.priceToY(strike)
+    if (!Number.isFinite(y) || y < -8 || y > rc.plotHeight + 8) return
+
+    ctx.save()
+    ctx.globalAlpha = 0.6
+    ctx.strokeStyle = MAGNET_COLOR
+    ctx.lineWidth = 1
+    ctx.setLineDash([6, 3])
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(rc.plotWidth, y)
+    ctx.stroke()
+
+    ctx.setLineDash([])
+    ctx.font = FONT
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'bottom'
+    const text = `Magnet ${formatOverlayStrike(strike)}`
+    const width = ctx.measureText(text).width
+    const labelY = Math.max(11, y - 3)
+    ctx.globalAlpha = 0.75
+    ctx.fillStyle = rc.theme.background
+    ctx.fillRect(2, labelY - 11, width + 4, 12)
+    ctx.globalAlpha = 1
+    ctx.fillStyle = MAGNET_COLOR
     ctx.fillText(text, 4, labelY)
     ctx.restore()
   }

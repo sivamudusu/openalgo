@@ -242,6 +242,62 @@ describe('overlayDataFromChain', () => {
     expect(data.maxPeStrike).toBe(22_700)
   })
 
+  it('takes the walls from the server level map when the chain carries one', () => {
+    const withMap = chain()
+    withMap.level_map = {
+      underlying: 'NIFTY',
+      expiry: '30OCT26',
+      spot: 22_750,
+      atm_strike: 22_750,
+      support: 22_700,
+      resistance: 22_800,
+      nearest_support: 22_700,
+      nearest_resistance: 22_800,
+      next_support: null,
+      next_resistance: null,
+      magnet: 22_750,
+      magnet_balance: 0.1,
+      no_trade_zone: { low: 22_700, high: 22_800 },
+      pcr: 0.8,
+      regime: 'neutral',
+      warning: null,
+    }
+    const data = overlayDataFromChain(withMap, 'oi')
+
+    expect(data.levelMap?.magnet).toBe(22_750)
+    expect(data.maxCeStrike).toBe(22_800)
+    expect(data.maxPeStrike).toBe(22_700)
+  })
+
+  it('follows the server level map even when it names a different wall', () => {
+    // The map is the authority. The overlay's own scan of the ladder is only
+    // a fallback for a chain that arrives without one, because the two used
+    // to compute their own levels and could disagree about the same chain.
+    const withMap = chain()
+    withMap.level_map = {
+      underlying: 'NIFTY',
+      expiry: '30OCT26',
+      spot: 22_750,
+      atm_strike: 22_750,
+      support: 22_700,
+      resistance: 22_750,
+      nearest_support: 22_700,
+      nearest_resistance: 22_750,
+      next_support: null,
+      next_resistance: null,
+      magnet: 22_800,
+      magnet_balance: 0.1,
+      no_trade_zone: { low: 22_700, high: 22_750 },
+      pcr: 0.8,
+      regime: 'neutral',
+      warning: null,
+    }
+    const data = overlayDataFromChain(withMap, 'oi')
+
+    expect(data.maxCeStrike).toBe(22_750)
+    expect(data.maxPeStrike).toBe(22_700)
+  })
+
   it('treats a missing leg as zero and a chain with no OI as no levels', () => {
     const empty = chain()
     empty.chain = [row(22_700, 0, 0)]

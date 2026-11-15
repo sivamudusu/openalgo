@@ -52,7 +52,9 @@ from database.auth_db import get_auth_token_broker
 from database.symbol import SymToken, db_session
 from database.token_db import get_br_symbol
 from database.token_db_enhanced import fno_search_symbols
+from services import market_context
 from services.broker_busy import BrokerBusyError, broker_busy_result, is_broker_busy
+from services.level_map_service import build_level_map
 from services.option_greeks_service import (
     calculate_chain_greeks,
     calculate_time_to_expiry,
@@ -232,6 +234,30 @@ def get_option_symbols_for_chain(
         )
 
     return chain_symbols
+
+
+def _atm_implied_volatility(chain: list[dict[str, Any]], atm_strike: float) -> float | None:
+    """The at-the-money implied volatility, as a decimal.
+
+    The two ATM legs are averaged so a one-sided quote does not set the
+    expected move on its own. None when the chain carries no usable volatility.
+    """
+    values: list[float] = []
+    for row in chain:
+        if row.get("strike") != atm_strike:
+            continue
+        for leg_key in ("ce", "pe"):
+            leg = row.get(leg_key) or {}
+            iv = leg.get("implied_volatility")
+            if iv:
+                try:
+                    values.append(float(iv))
+                except (TypeError, ValueError):
+                    continue
+        break
+    if not values:
+        return None
+    return sum(values) / len(values)
 
 
 def _forward_from_chain(
@@ -723,6 +749,52 @@ def get_option_chain(
             forward_price = _forward_from_chain(chain, atm_strike, underlying_ltp)
             _attach_chain_greeks(chain, expiry_dt, forward_price, interest_rate)
 
+        # The canonical level map, computed from this very chain so that every
+        # surface drawing support and resistance reads the same numbers. The
+        # Sahasra panel and the chart overlay used to compute their own levels
+        # under different rules and disagree about the same chain.
+        context_rows = [
+            {
+                "strike": row["strike"],
+                "ce_oi": (row.get("ce") or {}).get("oi", 0),
+                "pe_oi": (row.get("pe") or {}).get("oi", 0),
+                "ce_gamma": (row.get("ce") or {}).get("gamma", 0),
+                "pe_gamma": (row.get("pe") or {}).get("gamma", 0),
+                "ce_symbol": (row.get("ce") or {}).get("symbol"),
+                "pe_symbol": (row.get("pe") or {}).get("symbol"),
+                "lotsize": (row.get("ce") or {}).get("lotsize")
+                or (row.get("pe") or {}).get("lotsize"),
+            }
+            for row in chain
+        ]
+        level_map = build_level_map(
+            underlying_ltp,
+            context_rows,
+            underlying=base_symbol,
+            expiry=final_expiry,
+            atm_strike=atm_strike,
+        )
+
+        # What the market can do today, and how a move would behave: the
+        # expected move from the at-the-money volatility, and the dealer gamma
+        # position with the strike where it changes sign.
+        server_ts = int(datetime.now(UTC).timestamp())
+        atm_iv = _atm_implied_volatility(chain, atm_strike)
+        t_years = market_context.years_to_expiry(expiry_ts, server_ts) if expiry_ts else 0.0
+        market = market_context.build_market_context(
+            underlying_ltp,
+            context_rows,
+            atm_iv=atm_iv,
+            t_years=t_years,
+        )
+        intraday_band = (market.get("expected_move") or {}).get("intraday")
+        market["support_within_reach"] = market_context.within_reach(
+            level_map["support"], underlying_ltp, intraday_band
+        )
+        market["resistance_within_reach"] = market_context.within_reach(
+            level_map["resistance"], underlying_ltp, intraday_band
+        )
+
         return (
             True,
             {
@@ -735,11 +807,13 @@ def get_option_chain(
                 "expiry_ts": expiry_ts,
                 # Lets a client correct for its own clock skew before computing
                 # time to expiry, which otherwise silently biases every Greek.
-                "server_ts": int(datetime.now(UTC).timestamp()),
+                "server_ts": server_ts,
                 "atm_strike": atm_strike,
                 "quotes_included": with_quotes,
                 "greeks_included": bool(with_quotes and with_greeks),
                 "forward_price": forward_price,
+                "level_map": level_map,
+                "market_context": market,
                 "chain": chain,
             },
             200,

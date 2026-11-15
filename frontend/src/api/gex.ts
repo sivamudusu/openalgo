@@ -26,6 +26,15 @@ export interface GEXDataResponse {
   total_ce_gex?: number
   total_pe_gex?: number
   total_net_gex?: number
+  /**
+   * The strike where the cumulative net gamma exposure changes sign.
+   *
+   * Above it the dealers are net long gamma and dampen a move, so a wall
+   * holds and a breakout tends to fail. Below it they are net short gamma and
+   * amplify a move, so a wall gives way and a breakout tends to run.
+   */
+  gamma_flip_strike?: number | null
+  dealer_regime?: 'dampening' | 'amplifying'
   chain?: GEXChainItem[]
 }
 

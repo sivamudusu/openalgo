@@ -84,6 +84,17 @@ They stay on open interest when the bars show another measure, because that is
 what makes a strike support or resistance. The band at the at-the-money strike
 is a reference, not a level.
 
+A third line marks the **magnet**: the strike whose weaker side carries the
+most open interest. Neither side can push price through it alone, so it is
+where price balances instead of travelling, and it is usually where the market
+chops. The stretch between the two walls is shaded as the **no-trade zone**.
+
+The walls, the magnet and the no-trade zone are read from the same level map
+the Sahasra panel reads, so the two surfaces cannot disagree about the same
+chain. An earlier version of each computed its own levels under different
+rules, and the panel named a small bump near the money as the wall the overlay
+showed further away.
+
 The expiry defaults to the nearest; the menu lists the others. The menu fetches
 10, 15 or 20 strikes around at-the-money. **Value labels** prints the measure
 beside each bar; **Support / resistance** hides or shows the two lines. The
@@ -436,6 +447,38 @@ not on the option premium chart. **Show chart** on a manual order opens its
 index. The server watches the index and sends a market exit when either level is
 touched, even after the tab is closed. Manual orders keep the `Manual` strategy
 tag, separate from the visual tool's own orders.
+
+### The Sahasra panel
+
+The **Sahasra** panel watches the same level map the chart overlay draws, and
+reports the setup the closed fifteen-minute candles describe.
+
+- **S** and **R** are the walls: the largest open interest on each side of the
+  money. **Magnet** is the strike whose weaker side carries the most interest,
+  where price balances rather than travelling. The no-trade zone is the
+  stretch between the two walls.
+- **Flip** is the strike where the dealers' net gamma exposure changes sign.
+  Above it their hedging damps a move, so a wall holds and a breakout tends to
+  fail; below it they amplify a move, so a wall gives way. **±** is the
+  standard-deviation sized range for the session, from the at-the-money
+  volatility, so a wall outside it is reported as one the market has no
+  intention of reaching today.
+- The state comes from the last two closed fifteen-minute candles: a breakout
+  above the resistance, a breakdown below the support, a **rejection** where
+  the level was reached and handed back, a bounce off the support, or a move
+  inside the no-trade zone. The confirmation line says whether the candle
+  itself confirms it, from the candle's own geometry rather than an
+  oscillator.
+- **Auto** opens a position when the state and the confirmation agree. The
+  size follows the **risk per trade**: the premium stop is what one unit can
+  lose, so the quantity is the risk divided by that. The day's loss is capped
+  at the **day loss cap**, and the loop stops opening positions once it is
+  reached.
+
+The panel keeps a log of every signal it produced and what the signal turned
+into, and reports the live record underneath. A hit rate is only shown once
+there are fifty closed signals, because a rate computed from a handful of
+trades reads as a result when it is not one.
 
 ## The Bottom Dock
 
