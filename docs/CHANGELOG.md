@@ -8,6 +8,59 @@ fix, live in [docs/releases](releases/).
 
 ## [Unreleased]
 
+### The Sahasra model reads one level map, and the walls are the walls
+
+The Sahasra panel and the chart's option-chain overlay used to compute support
+and resistance separately, under different rules, from the same option chain.
+They disagreed, and the panel was the one that was wrong: it ranked candidate
+strikes by proximity to the money before it ranked them by open interest, so a
+small bump near the money beat a large wall further away. On NIFTY, whose
+strikes are 50 points apart, the bump was not even a neighbour of the wall, so
+it passed the local-maximum test as well.
+
+Both surfaces now read one level map, computed once by the server from the
+chain being shown.
+
+- **The headline wall is the largest open interest on its side.** The panel
+  names the same strike the overlay draws.
+- **The magnet is the strike whose weaker side carries the most interest.**
+  Neither side can push price through it alone, so it is where price balances,
+  and it is usually where the market chops. The overlay draws it, and the
+  stretch between the two walls is shaded as the no-trade zone.
+- **Near and next walls** are reported on each side, so a target has somewhere
+  to point at.
+- The panel's levels cache is now a locked TTL cache rather than a plain dict
+  mutated from request threads.
+
+The rejection-versus-breakout question now has numbers behind it instead of an
+oscillator:
+
+- **The gamma flip strike** is the level where the dealers' net gamma
+  exposure changes sign. Above it they are net long gamma and damp a move, so
+  a wall holds and a breakout tends to fail; below it they amplify a move, so
+  a wall gives way. The sign convention is stated in the code rather than
+  assumed.
+- **The expected move** comes from the at-the-money volatility and the time
+  left, so a wall outside the session's range is reported as a level the
+  market has no intention of reaching today.
+- **Confirmation is the candle's own geometry**: a rejection is an upper wick
+  that took back half the range, a breakout is a body that closed where it
+  broke. This replaces reading exhaustion off a Bollinger %b line, which says
+  where price sits inside a band rather than whether the move is finishing.
+- **A rejection is now its own state.** The panel had no way to say that a
+  level was reached and handed back, which is the setup that buys a put at
+  resistance.
+
+Two gaps in the risk rails are closed: the position is sized from the rupee
+risk the trader accepts rather than a fixed lot count, and the day's loss is
+capped, so the loop stops opening positions once the cap is reached.
+
+Every signal is recorded with the map that produced it and what it turned
+into, so the model's live record can be read rather than remembered. A hit
+rate is only claimed once there are fifty closed signals, because a rate
+computed from a handful of trades reads as a result when it is not one. A new
+migration creates the table.
+
 ### Charting terminal on openalgo-charts 2.6.0 and OpenScript 0.8.1
 
 `/trading` moves from openalgo-charts 2.5.1 to 2.6.0, and OpenScript from 0.5.0

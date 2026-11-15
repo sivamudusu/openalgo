@@ -602,6 +602,12 @@ export default function GEXDashboard() {
           <Badge variant="secondary" className="text-sm px-3 py-1">
             Net GEX: {formatNumber(gexData.total_net_gex || 0)}
           </Badge>
+          {gexData.gamma_flip_strike != null && (
+            <Badge variant="secondary" className="text-sm px-3 py-1">
+              Flip {gexData.gamma_flip_strike} ·{' '}
+              {gexData.dealer_regime === 'amplifying' ? 'moves amplify' : 'moves dampen'}
+            </Badge>
+          )}
         </div>
       )}
 

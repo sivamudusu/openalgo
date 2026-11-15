@@ -15,8 +15,86 @@ export interface OptionChainResponse {
   /** Forward price used for Greeks, present when the server computed them */
   forward_price?: number | null
   greeks_included?: boolean
+  /**
+   * The canonical level map, computed by the server from this very chain.
+   *
+   * Every surface that draws support and resistance reads it from here, so
+   * the chart overlay and the Sahasra panel cannot disagree about the same
+   * chain. It used to be computed twice, under different rules.
+   */
+  level_map?: OptionLevelMap
+  /**
+   * What the market can do today, and how a move would behave: the expected
+   * move from the at-the-money volatility, and the dealer gamma position with
+   * the strike where it changes sign.
+   */
+  market_context?: MarketContext
   chain: OptionStrike[]
   message?: string
+}
+
+/**
+ * The expected move, the dealer gamma position and the flip strike.
+ */
+export interface MarketContext {
+  expected_move: {
+    atm_iv: number
+    intraday: ExpectedMoveBand
+    to_expiry: ExpectedMoveBand
+  } | null
+  atm_iv: number | null
+  /** The strike where the cumulative net gamma exposure changes sign. */
+  gamma_flip_strike: number | null
+  /**
+   * Above the flip strike the dealers are net long gamma and dampen a move,
+   * so a wall holds. Below it they amplify a move, so a wall gives way.
+   */
+  dealer_regime: 'dampening' | 'amplifying'
+  total_net_gex: number
+  support_within_reach?: boolean | null
+  resistance_within_reach?: boolean | null
+  gex_by_strike?: Array<{
+    strike: number
+    ce_gex: number
+    pe_gex: number
+    net_gex: number
+  }>
+}
+
+/** A standard-deviation sized range around the underlying. */
+export interface ExpectedMoveBand {
+  sigma_move: number
+  one_sigma_low: number
+  one_sigma_high: number
+  two_sigma_low: number
+  two_sigma_high: number
+}
+
+/**
+ * The levels one option chain describes.
+ *
+ * `support` and `resistance` are the headline walls: the largest open
+ * interest on each side of the underlying. `magnet` is the strike whose
+ * weaker side carries the most interest, where price balances instead of
+ * travelling. The no-trade zone is the open interval between the walls.
+ */
+export interface OptionLevelMap {
+  underlying: string | null
+  expiry: string | null
+  spot: number | null
+  atm_strike: number | null
+  support: number | null
+  resistance: number | null
+  nearest_support: number | null
+  nearest_resistance: number | null
+  next_support: number | null
+  next_resistance: number | null
+  magnet: number | null
+  magnet_balance: number | null
+  no_trade_zone: { low: number; high: number } | null
+  pcr: number | null
+  regime: 'bearish' | 'neutral' | 'bullish' | 'unknown'
+  warning: string | null
 }
 
 /** Immutable derivative request identity attached when an option-chain poll starts. */
