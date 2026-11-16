@@ -130,6 +130,86 @@ def test_a_bearish_bracket_triggers_on_the_opposite_side(engine, monkeypatch):
     assert calls == [(1, "target"), (1, "sl")]
 
 
+def test_a_trailing_stop_ratchets_down_behind_a_falling_index(engine, monkeypatch):
+    engine._remember(
+        _row(
+            bias="bearish",
+            entry_reference=24500.0,
+            target_price=24380.0,
+            stop_price=24560.0,
+            trail_enabled=True,
+            trail_step=25.0,
+            trail_trigger=1.0,
+            highest_price=None,
+            lowest_price=None,
+        )
+    )
+    monkeypatch.setattr(engine_module.store, "update_trail", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "_request_exit", lambda bid, kind: None)
+
+    # The index falls, so the stop follows it down by the 25-point step.
+    engine.on_price("NIFTY", "NSE_INDEX", 24490.0)
+    assert engine._active[1]["stop_price"] == pytest.approx(24515.0)
+    assert engine._active[1]["lowest_price"] == pytest.approx(24490.0)
+
+    engine.on_price("NIFTY", "NSE_INDEX", 24450.0)
+    assert engine._active[1]["stop_price"] == pytest.approx(24475.0)
+
+
+def test_a_trailing_stop_never_loosens_on_a_pullback(engine, monkeypatch):
+    engine._remember(
+        _row(
+            bias="bearish",
+            entry_reference=24500.0,
+            target_price=24380.0,
+            stop_price=24560.0,
+            trail_enabled=True,
+            trail_step=25.0,
+            trail_trigger=1.0,
+        )
+    )
+    monkeypatch.setattr(engine_module.store, "update_trail", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "_request_exit", lambda bid, kind: None)
+
+    engine.on_price("NIFTY", "NSE_INDEX", 24450.0)
+    trailed = engine._active[1]["stop_price"]
+    assert trailed == pytest.approx(24475.0)
+
+    # The index bounces. The stop must not follow it back up.
+    engine.on_price("NIFTY", "NSE_INDEX", 24480.0)
+    assert engine._active[1]["stop_price"] == pytest.approx(trailed)
+
+
+def test_the_trail_is_persisted_at_most_once_per_window(engine, monkeypatch):
+    engine._remember(
+        _row(
+            bias="bearish",
+            entry_reference=24500.0,
+            target_price=24380.0,
+            stop_price=24560.0,
+            trail_enabled=True,
+            trail_step=25.0,
+            trail_trigger=1.0,
+        )
+    )
+    writes = []
+    monkeypatch.setattr(
+        engine_module.store,
+        "update_trail",
+        lambda bid, **fields: writes.append((bid, fields)),
+    )
+    monkeypatch.setattr(engine, "_request_exit", lambda bid, kind: None)
+
+    engine.on_price("NIFTY", "NSE_INDEX", 24490.0)
+    engine.on_price("NIFTY", "NSE_INDEX", 24450.0)
+
+    # The ratchet is in memory on both ticks, but only the first reaches the
+    # database: a write per tick would stall the hub.
+    assert engine._active[1]["stop_price"] == pytest.approx(24475.0)
+    assert len(writes) == 1
+    assert writes[0][0] == 1
+
+
 def test_a_filled_entry_activates_and_watches(engine, monkeypatch):
     row = _row(status="working", entry_fill_price=None, filled_at=None)
     activated = []

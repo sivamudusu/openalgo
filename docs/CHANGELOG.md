@@ -8,6 +8,26 @@ fix, live in [docs/releases](releases/).
 
 ## [Unreleased]
 
+### Draggable stops may cross the entry, and can trail
+
+Two defects are fixed in how a visual bracket's stop is placed and moved.
+
+- **A stop the trader dragged past the entry is accepted.** A stop was checked
+  against the price at which the order was placed, so once the index had moved
+  into profit the stop that protected it was on the wrong side of that old
+  price and the chart refused the drag. The levels are now checked against the
+  live index price, which is where the market is, while the entry is history.
+- **A level the browser allows is a level the server accepts.** The browser
+  clamped a dragged level to exactly one tick beyond the reference while the
+  server demanded strictly beyond it, so the clamped value was the value the
+  server refused. Both sides now compute the boundary the same way.
+
+A visual order can also carry a **trailing stop**, set on the order panel as a
+step in index points. Once the trade is in profit the stop follows the index by
+that step and only ever tightens; it never moves away from the position. The
+trail is stored with the order and restored on a restart, and it uses the same
+rules as the strategy module rather than a second implementation.
+
 ### The Sahasra model reads one level map, and the walls are the walls
 
 The Sahasra panel and the chart's option-chain overlay used to compute support

@@ -41,6 +41,11 @@ EXIT_RETRY_SEC = 5.0
 RECONCILE_SEC = 15.0
 PLACING_STALE_SEC = 120.0
 DEFAULT_INDEX_TICK = 0.05
+# How often a trailed stop is written to the database. The ratchet itself is
+# applied in memory on every tick, so this only bounds how much a restart can
+# forget; writing on every tick would put a SQLite round trip in the tick path,
+# which stalls the eventlet hub when the index is moving fast.
+TRAIL_PERSIST_SEC = 5.0
 
 _FILLED_STATUSES = {"complete", "completed", "filled", "executed", "traded"}
 _REJECTED_STATUSES = {"rejected", "cancelled", "canceled", "expired"}
@@ -103,7 +108,9 @@ class VisualBracketEngine:
         self._by_underlying: dict[tuple[str, str], set[int]] = {}
         self._last_exit_attempt: dict[int, float] = {}
         self._exit_inflight: set[int] = set()
+        self._last_trail_persist: dict[int, float] = {}
         self._subscribed_ids: set[int] = set()
+        self._last_price: dict[tuple[str, str], float] = {}
         self._started = False
         self._reconciling = False
         self._recovered = False
@@ -186,6 +193,7 @@ class VisualBracketEngine:
             self._by_underlying.clear()
             self._last_exit_attempt.clear()
             self._exit_inflight.clear()
+            self._last_trail_persist.clear()
             subscribed_ids = set(self._subscribed_ids)
             self._subscribed_ids.clear()
         for bracket_id in subscribed_ids:
@@ -339,9 +347,23 @@ class VisualBracketEngine:
         entry = row["entry_reference"]
         target = payload.get("target_price", row["target_price"])
         stop = payload.get("stop_price", row["stop_price"])
-        problems = validate_levels(bias, entry, target, stop, DEFAULT_INDEX_TICK)
+        # The levels are measured against the live index price, so that a stop
+        # which has trailed into profit is still on the legal side. The entry
+        # price is the fallback when no price has arrived yet.
+        reference = self.reference_price(row) or entry
+        problems = validate_levels(bias, entry, target, stop, DEFAULT_INDEX_TICK, reference)
         if problems:
             return False, {"status": "error", "message": " ".join(problems)}, 400
+
+        trail_enabled = bool(payload.get("trail_enabled", row.get("trail_enabled")))
+        trail_step = float(payload.get("trail_step", row.get("trail_step") or 0.0) or 0.0)
+        trail_trigger = float(payload.get("trail_trigger", row.get("trail_trigger") or 1.0) or 1.0)
+        if trail_enabled and trail_step <= 0:
+            return (
+                False,
+                {"status": "error", "message": "A trailing stop needs a step of more than zero."},
+                400,
+            )
 
         updated = store.update_bracket(
             bracket_id,
@@ -351,6 +373,9 @@ class VisualBracketEngine:
             target_offset=abs(float(target) - float(entry)),
             stop_offset=abs(float(entry) - float(stop)),
             risk_reward=risk_reward(entry, target, stop),
+            trail_enabled=trail_enabled,
+            trail_step=trail_step,
+            trail_trigger=trail_trigger,
             error_message=None,
         )
         if updated is None:
@@ -484,6 +509,30 @@ class VisualBracketEngine:
         # on the chart instead of disappearing into the database.
         return store.list_brackets(statuses=store.LIVE_STATUSES + ("error",), mode=mode)
 
+    def reference_price(self, row: dict[str, Any]) -> float | None:
+        """The live index price for a bracket, or None when there is none.
+
+        A level is measured against this rather than against the entry, so
+        that a stop which has trailed into profit is still on the legal side.
+        The entry price is the fallback when no price has arrived yet.
+        """
+        symbol = str(row.get("underlying_symbol") or "")
+        exchange = str(row.get("underlying_exchange") or "")
+        if not symbol or not exchange:
+            return None
+        with self._lock:
+            price = self._last_price.get((symbol, exchange))
+        if price:
+            return float(price)
+        try:
+            from services.strategy_module.tick_feed import get_risk_tick_feed
+
+            price = get_risk_tick_feed().get_ltp(symbol, exchange)
+        except Exception:
+            logger.debug("Could not read the visual bracket reference price", exc_info=True)
+            return None
+        return float(price) if price else None
+
     # ------------------------------------------------------------------ tick path
 
     def on_price(self, symbol: str, exchange: str, ltp: float) -> None:
@@ -491,6 +540,8 @@ class VisualBracketEngine:
         key = (str(symbol), str(exchange))
         with self._lock:
             ids = list(self._by_underlying.get(key, ()))
+            if ltp > 0:
+                self._last_price[key] = ltp
 
         for bracket_id in ids:
             with self._lock:
@@ -498,13 +549,21 @@ class VisualBracketEngine:
             if row is None:
                 continue
             try:
+                bias = Bias(row["bias"])
+                entry = float(row["entry_reference"])
                 risk = PositionRisk(
                     identifier=str(bracket_id),
-                    side=bias_side(Bias(row["bias"])),
-                    entry_price=float(row["entry_reference"]),
+                    side=bias_side(bias),
+                    entry_price=entry,
                     quantity=float(row["quantity"]),
                     stop_price=float(row["stop_price"]),
+                    initial_stop_price=self._configured_stop(row, entry, bias),
                     target_price=float(row["target_price"]),
+                    trailing_enabled=bool(row.get("trail_enabled")),
+                    trail_step=float(row.get("trail_step") or 0.0),
+                    trail_trigger=float(row.get("trail_trigger") or 1.0),
+                    highest_price=row.get("highest_price"),
+                    lowest_price=row.get("lowest_price"),
                 )
                 decision = evaluate_position(risk, ltp)
             except Exception:
@@ -513,6 +572,77 @@ class VisualBracketEngine:
             if decision.breached:
                 reason = decision.reason.value if decision.reason else "sl"
                 self._request_exit(bracket_id, reason)
+                continue
+            if decision.stop_moved:
+                self._apply_trail(bracket_id, decision)
+
+    def _configured_stop(self, row: dict[str, Any], entry: float, bias: Bias) -> float:
+        """The stop the trader last set by hand, which a stepped trail anchors on.
+
+        ``stop_price`` moves as the trail advances, so it cannot serve as the
+        anchor. ``stop_offset`` is the distance from entry at placement and at
+        the last modify, and the trail never rewrites it, so it still names the
+        configured level.
+        """
+        offset = row.get("stop_offset")
+        current = float(row["stop_price"])
+        if offset is None:
+            return current
+        offset = float(offset)
+        if offset <= 0:
+            return current
+        anchor = entry - offset if bias is Bias.BULLISH else entry + offset
+        return anchor if anchor > 0 else current
+
+    def _apply_trail(self, bracket_id: int, decision) -> None:
+        """Take a trailed stop into the live row, then persist it at most 1/N.
+
+        The ratchet is applied in memory on every tick that moves it, so tick
+        evaluation never sees a stale stop. The database write is throttled:
+        it exists only so a restart does not forget the trail, and a SQLite
+        round trip on every tick would stall the eventlet hub while the index
+        is moving fast.
+        """
+        with self._lock:
+            row = self._active.get(bracket_id)
+            if row is None:
+                return
+            row = dict(row)
+            if decision.stop_price is not None:
+                row["stop_price"] = decision.stop_price
+            row["highest_price"] = decision.highest_price
+            row["lowest_price"] = decision.lowest_price
+            self._active[bracket_id] = row
+
+            now = time.monotonic()
+            if now - self._last_trail_persist.get(bracket_id, 0.0) < TRAIL_PERSIST_SEC:
+                return
+            self._last_trail_persist[bracket_id] = now
+
+        self._persist_trail(bracket_id, decision)
+
+    def _persist_trail(self, bracket_id: int, decision) -> None:
+        """Save a trailed stop and the extremes the trail ratchets against.
+
+        The stop only ever tightens, so writing it back is safe. The extremes
+        matter as much as the stop: without them a restart would forget how
+        far the position had run, and the trail would start again from
+        wherever the market happened to be.
+
+        The live row is left alone here. It was already advanced in memory
+        before this call, and another tick may have advanced it further while
+        this write was in flight; copying the database's older value back
+        would loosen a stop that had already moved.
+        """
+        try:
+            store.update_trail(
+                bracket_id,
+                stop_price=decision.stop_price,
+                highest_price=decision.highest_price,
+                lowest_price=decision.lowest_price,
+            )
+        except Exception:
+            logger.exception("Could not persist the visual bracket trail")
 
     def _request_exit(self, bracket_id: int, kind: str) -> bool:
         """Start one exit worker, rate-limited per bracket."""
@@ -993,6 +1123,7 @@ class VisualBracketEngine:
             row = self._active.pop(bracket_id, None)
             self._last_exit_attempt.pop(bracket_id, None)
             self._exit_inflight.discard(bracket_id)
+            self._last_trail_persist.pop(bracket_id, None)
             if row is None:
                 return
             key = (row["underlying_symbol"], row["underlying_exchange"])

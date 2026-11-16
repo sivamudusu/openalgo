@@ -70,16 +70,38 @@ def _round_to_tick(price: float, tick_size: float | None) -> float:
     return round(price / tick) * tick
 
 
+def _boundaries(reference: float, gap: float, tick_size: float | None) -> tuple[float, float]:
+    """The nearest legal level above and below the reference price.
+
+    Both the clamp and the validation use this pair, so a clamped value is
+    always a value the server accepts. Computing them separately is how the
+    two drifted apart once: the clamp pinned a level to ``reference + gap``
+    while the validation demanded *strictly* beyond it, so every level the
+    browser allowed the trader to drag to was the one the server refused.
+    """
+    return (
+        _round_to_tick(reference + gap, tick_size),
+        _round_to_tick(reference - gap, tick_size),
+    )
+
+
 def validate_levels(
     bias: Bias,
     entry: float | None,
     target: float | None,
     stop: float | None,
     tick_size: float | None = None,
+    reference_price: float | None = None,
 ) -> tuple[str, ...]:
     """Return plain-text reasons the levels are unusable, empty when fine.
 
     The messages are written for a trader and are safe to show directly.
+
+    ``reference_price`` is the price the levels are measured against. It is the
+    live price of the underlying when the position is already open, so that a
+    stop which has trailed into profit is still legal, and the entry price
+    otherwise. The rule is always the same one: a level must sit on the side of
+    the reference that would not fire at once.
     """
     problems: list[str] = []
     entry_price = as_price(entry)
@@ -96,19 +118,22 @@ def validate_levels(
         return tuple(problems)
 
     gap = _gap(tick_size)
+    reference = as_price(reference_price) or entry_price
+    above, below = _boundaries(reference, gap, tick_size)
+
     if abs(target_price - stop_price) < gap:
         problems.append("Target and stop cannot be the same price.")
 
     if bias is Bias.BULLISH:
-        if target_price <= entry_price + gap:
-            problems.append("Target must be above entry for a bullish trade.")
-        if stop_price >= entry_price - gap:
-            problems.append("Stop must be below entry for a bullish trade.")
+        if target_price < above:
+            problems.append("Target must be above the price for a bullish trade.")
+        if stop_price > below:
+            problems.append("Stop must be below the price for a bullish trade.")
     else:
-        if target_price >= entry_price - gap:
-            problems.append("Target must be below entry for a bearish trade.")
-        if stop_price <= entry_price + gap:
-            problems.append("Stop must be above entry for a bearish trade.")
+        if target_price > below:
+            problems.append("Target must be below the price for a bearish trade.")
+        if stop_price < above:
+            problems.append("Stop must be above the price for a bearish trade.")
 
     return tuple(problems)
 
@@ -120,29 +145,37 @@ def clamp_level(
     *,
     moving: str,
     tick_size: float | None = None,
+    reference_price: float | None = None,
 ) -> float:
-    """Clamp a dragged target or stop so it cannot cross the entry.
+    """Clamp a dragged target or stop so it cannot cross the reference price.
 
-    ``moving`` is ``"target"`` or ``"stop"``. A target dragged past entry is
-    pinned one tick on the legal side; the same for a stop. The value is
-    rounded to the instrument's tick after clamping.
+    ``moving`` is ``"target"`` or ``"stop"``. A target dragged past the
+    reference is pinned one tick on the legal side; the same for a stop. The
+    value is rounded to the instrument's tick after clamping.
+
+    The reference is the live price of the underlying when the position is
+    already open, and the entry price otherwise, so that a stop which has
+    trailed into profit may still be dragged. It is the same reference
+    :func:`validate_levels` measures against, so a clamped value is never a
+    value the server then refuses.
     """
     price = as_price(value)
+    reference = as_price(reference_price) or as_price(entry) or 0.0
     if price is None:
-        price = as_price(entry) or 0.0
+        price = reference
     gap = _gap(tick_size)
-    entry_price = as_price(entry) or 0.0
+    above, below = _boundaries(reference, gap, tick_size)
 
     if moving == "target":
         if bias is Bias.BULLISH:
-            price = max(price, entry_price + gap)
+            price = max(price, above)
         else:
-            price = min(price, entry_price - gap)
+            price = min(price, below)
     elif moving == "stop":
         if bias is Bias.BULLISH:
-            price = min(price, entry_price - gap)
+            price = min(price, below)
         else:
-            price = max(price, entry_price + gap)
+            price = max(price, above)
     else:
         raise ValueError("moving must be 'target' or 'stop'")
 

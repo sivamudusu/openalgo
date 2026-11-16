@@ -33,6 +33,11 @@ export interface VisualBracketApiRow {
   target_offset: number
   stop_offset: number
   risk_reward: number
+  trail_enabled: boolean
+  trail_step: number
+  trail_trigger: number
+  highest_price: number | null
+  lowest_price: number | null
   exit_kind: string | null
   exit_order_id: string | null
   exit_reason: string | null
@@ -64,6 +69,9 @@ export interface VisualBracketPlaceRequest {
   strike_selection: string
   client_token: string
   strategy?: 'Manual' | 'VisualBracket'
+  trail_enabled?: boolean
+  trail_step?: number
+  trail_trigger?: number
 }
 
 interface ApiResponse<T> {
@@ -86,7 +94,14 @@ export const visualBracketApi = {
 
   async modify(
     id: number,
-    levels: { entry_reference: number; target_price: number; stop_price: number }
+    levels: {
+      entry_reference: number
+      target_price: number
+      stop_price: number
+      trail_enabled?: boolean
+      trail_step?: number
+      trail_trigger?: number
+    }
   ): Promise<VisualBracketApiRow> {
     const response = await webClient.post<ApiResponse<VisualBracketApiRow>>('/bracket/api/modify', {
       id,

@@ -122,3 +122,48 @@ def test_find_by_order_id_matches_entry_and_exit(temp_store):
     assert temp_store.find_by_order_id("E1")["id"] == bracket_id
     assert temp_store.find_by_order_id("X1")["id"] == bracket_id
     assert temp_store.find_by_order_id("nope") is None
+
+
+def test_the_trail_ratchets_down_for_a_bearish_bracket(temp_store):
+    created = temp_store.create_bracket(
+        {**_row_data(), "bias": "bearish", "stop_price": 24560.0, "stop_offset": 60.0}
+    )
+    bracket_id = created["id"]
+
+    moved = temp_store.update_trail(
+        bracket_id, stop_price=24515.0, highest_price=None, lowest_price=24490.0
+    )
+    assert moved["stop_price"] == pytest.approx(24515.0)
+    assert moved["lowest_price"] == pytest.approx(24490.0)
+
+
+def test_the_trail_never_loosens_a_bearish_stop(temp_store):
+    created = temp_store.create_bracket(
+        {**_row_data(), "bias": "bearish", "stop_price": 24560.0, "stop_offset": 60.0}
+    )
+    bracket_id = created["id"]
+    temp_store.update_trail(
+        bracket_id, stop_price=24515.0, highest_price=None, lowest_price=24490.0
+    )
+
+    # A stale or racing writer must not push the stop back away from the price.
+    held = temp_store.update_trail(
+        bracket_id, stop_price=24560.0, highest_price=None, lowest_price=24490.0
+    )
+    assert held["stop_price"] == pytest.approx(24515.0)
+
+
+def test_the_trail_ratchets_up_for_a_bullish_bracket(temp_store):
+    created = temp_store.create_bracket(_row_data())
+    bracket_id = created["id"]
+
+    moved = temp_store.update_trail(
+        bracket_id, stop_price=24490.0, highest_price=24540.0, lowest_price=None
+    )
+    assert moved["stop_price"] == pytest.approx(24490.0)
+
+    # Below the current stop is a loosening for a bullish trail, so it is kept.
+    held = temp_store.update_trail(
+        bracket_id, stop_price=24470.0, highest_price=24540.0, lowest_price=None
+    )
+    assert held["stop_price"] == pytest.approx(24490.0)

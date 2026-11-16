@@ -297,6 +297,15 @@ def resolve_contract(payload: dict[str, Any], api_key: str) -> dict[str, Any]:
     target_offset = abs(float(target_price) - float(entry_reference))
     stop_offset = abs(float(entry_reference) - float(stop_price))
 
+    # A trailing stop is optional and is measured in index points. A step of
+    # zero or less is not a trail, so it is refused rather than stored as an
+    # inert setting that would leave the trader believing it was protected.
+    trail_enabled = bool(payload.get("trail_enabled"))
+    trail_step = as_float(payload.get("trail_step"), 0.0) or 0.0
+    trail_trigger = as_float(payload.get("trail_trigger"), 1.0) or 1.0
+    if trail_enabled and trail_step <= 0:
+        raise VisualBracketError("A trailing stop needs a step of more than zero.")
+
     return {
         "underlying_symbol": underlying,
         "underlying_exchange": index_exchange,
@@ -322,4 +331,9 @@ def resolve_contract(payload: dict[str, Any], api_key: str) -> dict[str, Any]:
         "target_offset": target_offset,
         "stop_offset": stop_offset,
         "risk_reward": risk_reward(entry_reference, target_price, stop_price),
+        "trail_enabled": trail_enabled,
+        "trail_step": trail_step,
+        "trail_trigger": trail_trigger,
+        "highest_price": None,
+        "lowest_price": None,
     }

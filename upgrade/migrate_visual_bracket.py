@@ -37,6 +37,13 @@ from sqlalchemy.pool import NullPool  # noqa: E402
 
 TABLES = ("vb_bracket", "vb_bracket_event")
 STRATEGY_COLUMN = "strategy"
+TRAIL_COLUMNS = (
+    "trail_enabled",
+    "trail_step",
+    "trail_trigger",
+    "highest_price",
+    "lowest_price",
+)
 
 
 def resolve_sqlite_path(db_url: str) -> str:
@@ -89,6 +96,39 @@ def ensure_strategy_column(engine) -> bool:
     return True
 
 
+def ensure_trail_columns(engine) -> bool:
+    """Add the trailing-stop columns to an existing vb_bracket table.
+
+    A trailing stop needs the step, the trigger and the extremes the trail
+    ratchets against. Without the extremes a restart would forget how far the
+    position had run, so the trail would start again from wherever the market
+    happened to be, and a stop could loosen.
+    """
+    if not table_exists(engine, "vb_bracket"):
+        print("  [SKIP] vb_bracket is not present")
+        return False
+
+    columns = {column["name"] for column in inspect(engine).get_columns("vb_bracket")}
+    wanted = {
+        "trail_enabled": "BOOLEAN NOT NULL DEFAULT 0",
+        "trail_step": "FLOAT NOT NULL DEFAULT 0",
+        "trail_trigger": "FLOAT NOT NULL DEFAULT 1",
+        "highest_price": "FLOAT",
+        "lowest_price": "FLOAT",
+    }
+    missing = {name: ddl for name, ddl in wanted.items() if name not in columns}
+    if not missing:
+        print("  [SKIP] vb_bracket trail columns already exist")
+        return True
+
+    for name, ddl in missing.items():
+        print(f"  [ALTER] Adding vb_bracket.{name}...")
+        with engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE vb_bracket ADD COLUMN {name} {ddl}"))
+    print("  [OK] vb_bracket trail columns added")
+    return True
+
+
 def migrate(engine) -> bool:
     """Create both tables when missing and add the strategy column."""
     from database.visual_bracket_db import Base
@@ -101,7 +141,8 @@ def migrate(engine) -> bool:
     else:
         print("  [SKIP] visual bracket tables already exist")
 
-    return ensure_strategy_column(engine)
+    ensure_strategy_column(engine)
+    return ensure_trail_columns(engine)
 
 
 def status(engine) -> bool:
@@ -120,6 +161,10 @@ def status(engine) -> bool:
             has_strategy = STRATEGY_COLUMN in columns
             print(f"  {'vb_bracket.strategy':<30} {'present' if has_strategy else 'MISSING'}")
             applied = applied and has_strategy
+            for name in TRAIL_COLUMNS:
+                has_column = name in columns
+                print(f"  {f'vb_bracket.{name}':<30} {'present' if has_column else 'MISSING'}")
+                applied = applied and has_column
 
     print()
     print(f"  {'APPLIED' if applied else 'NOT APPLIED'}")
