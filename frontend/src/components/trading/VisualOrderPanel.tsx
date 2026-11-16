@@ -68,6 +68,8 @@ export function VisualOrderPanel({
   const [customStrike, setCustomStrike] = useState('')
   const [lots, setLots] = useState(1)
   const [placing, setPlacing] = useState(false)
+  const [trailEnabled, setTrailEnabled] = useState(false)
+  const [trailStep, setTrailStep] = useState('')
   const stagedRef = useRef(staged)
   stagedRef.current = staged
 
@@ -209,6 +211,11 @@ export function VisualOrderPanel({
 
   const place = async () => {
     if (!staged || !staged.contractSymbol || !staged.strike || !staged.expiry) return
+    const step = trailEnabled ? Number(trailStep) : 0
+    if (trailEnabled && (!Number.isFinite(step) || step <= 0)) {
+      onToast('A trailing stop needs a step of more than zero.', 'err')
+      return
+    }
     setPlacing(true)
     try {
       const row = await visualBracketApi.place({
@@ -231,6 +238,8 @@ export function VisualOrderPanel({
         strike: staged.strike,
         strike_selection: selection,
         client_token: crypto.randomUUID(),
+        trail_enabled: trailEnabled,
+        trail_step: step,
       })
       onPlaced(row)
       onToast('Visual order placed.', 'ok')
@@ -366,6 +375,36 @@ export function VisualOrderPanel({
             {quantity.toLocaleString('en-IN')}
           </div>
         </div>
+      </div>
+
+      <div className="mt-2 rounded-md border border-border/70 p-2">
+        <label className="flex items-center justify-between text-[11px] text-muted-foreground">
+          <span>Trailing stop</span>
+          <input
+            type="checkbox"
+            checked={trailEnabled}
+            onChange={(event) => setTrailEnabled(event.target.checked)}
+            aria-label="Trailing stop"
+          />
+        </label>
+        {trailEnabled && (
+          <>
+            <label className="mt-2 block text-[11px] text-muted-foreground">
+              Trail step (index points)
+              <Input
+                className="mt-1 h-8"
+                inputMode="decimal"
+                value={trailStep}
+                onChange={(event) => setTrailStep(event.target.value)}
+                placeholder="25"
+              />
+            </label>
+            <div className="mt-1 text-[10px] text-muted-foreground">
+              The stop follows the index by this distance once the trade is in profit, and it only
+              ever tightens.
+            </div>
+          </>
+        )}
       </div>
 
       <div className="mt-3 rounded-md border border-border/70 bg-muted/30 p-2 text-xs">

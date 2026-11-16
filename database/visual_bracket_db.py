@@ -22,6 +22,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -102,6 +103,16 @@ class VisualBracket(Base):
     entry_reference = Column(Float, nullable=False)
     target_price = Column(Float, nullable=False)
     stop_price = Column(Float, nullable=False)
+
+    # Trailing stop. The step is in index points, and the extremes are the
+    # best and worst index levels the position has seen, which is what the
+    # trail ratchets against. They are stored rather than recomputed so the
+    # trail survives a restart and cannot loosen after one.
+    trail_enabled = Column(Boolean, nullable=False, default=False)
+    trail_step = Column(Float, nullable=False, default=0.0)
+    trail_trigger = Column(Float, nullable=False, default=1.0)
+    highest_price = Column(Float, nullable=True)
+    lowest_price = Column(Float, nullable=True)
     target_offset = Column(Float, nullable=False, default=0.0)
     stop_offset = Column(Float, nullable=False, default=0.0)
     risk_reward = Column(Float, nullable=False, default=0.0)
@@ -171,6 +182,11 @@ def _to_dict(row: VisualBracket) -> dict[str, Any]:
         "target_offset": row.target_offset,
         "stop_offset": row.stop_offset,
         "risk_reward": row.risk_reward,
+        "trail_enabled": bool(row.trail_enabled),
+        "trail_step": row.trail_step,
+        "trail_trigger": row.trail_trigger,
+        "highest_price": row.highest_price,
+        "lowest_price": row.lowest_price,
         "exit_kind": row.exit_kind,
         "exit_order_id": row.exit_order_id,
         "exit_reason": row.exit_reason,
@@ -304,6 +320,56 @@ def update_bracket(bracket_id: int, **fields: Any) -> dict[str, Any] | None:
         return get_bracket(bracket_id) if updated else None
     except Exception as e:
         logger.exception("Error updating visual bracket %s: %s", bracket_id, e)
+        db_session.rollback()
+        return None
+    finally:
+        _session_remove()
+
+
+def update_trail(
+    bracket_id: int,
+    *,
+    stop_price: float | None,
+    highest_price: float | None,
+    lowest_price: float | None,
+) -> dict[str, Any] | None:
+    """Persist a trailed stop and the extremes the trail ratchets against.
+
+    The stop is only allowed to tighten. A trail that loosened would be a stop
+    moving away from the position, which is the opposite of what a trailing
+    stop is for, and it would happen if two writers raced or if a stale
+    decision arrived after a newer one.
+    """
+    try:
+        row = db_session.query(VisualBracket).filter(VisualBracket.id == bracket_id).first()
+        if row is None:
+            return None
+        current = float(row.stop_price or 0.0)
+        moved = float(stop_price or 0.0)
+        if moved > 0 and current > 0:
+            # The stop tightens by moving toward the position: up for a
+            # bullish bracket, down for a bearish one. This mirrors the
+            # ratchet in the shared risk core, so the two agree on which
+            # direction a trail is allowed to move.
+            tighter = moved > current if row.bias == "bullish" else moved < current
+            if not tighter:
+                moved = current
+        patch: dict[str, Any] = {"updated_at": _now()}
+        if moved > 0:
+            patch["stop_price"] = moved
+        if highest_price is not None:
+            patch["highest_price"] = float(highest_price)
+        if lowest_price is not None:
+            patch["lowest_price"] = float(lowest_price)
+        updated = (
+            db_session.query(VisualBracket)
+            .filter(VisualBracket.id == bracket_id)
+            .update(patch, synchronize_session=False)
+        )
+        db_session.commit()
+        return get_bracket(bracket_id) if updated else None
+    except Exception as e:
+        logger.exception("Error updating the visual bracket trail %s: %s", bracket_id, e)
         db_session.rollback()
         return None
     finally:

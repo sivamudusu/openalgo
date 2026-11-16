@@ -109,21 +109,56 @@ export function roundToTick(price: number, tickSize: number | null | undefined):
   return Number((Math.round(price / tickSize) * tickSize).toFixed(4))
 }
 
-/** Clamp a dragged target or stop so it cannot cross entry. Mirrors services/risk/bracket.py. */
+/**
+ * The nearest legal level above and below the reference price.
+ *
+ * Both the clamp and the validation use this pair, so a clamped value is
+ * always a value the server accepts. Computing them separately is how the
+ * two drifted apart once: the clamp pinned a level to `reference + gap` while
+ * the validation demanded strictly beyond it, so every level the browser
+ * allowed the trader to drag to was the one the server refused.
+ */
+function boundariesFor(
+  reference: number,
+  gap: number,
+  tickSize: number | null | undefined
+): { above: number; below: number } {
+  return {
+    above: roundToTick(reference + gap, tickSize),
+    below: roundToTick(reference - gap, tickSize),
+  }
+}
+
+/**
+ * Clamp a dragged target or stop so it cannot cross the reference price.
+ * Mirrors services/risk/bracket.py.
+ *
+ * The reference is the live price of the underlying when the position is
+ * already open, and the entry price otherwise, so that a stop which has
+ * trailed into profit may still be dragged. It is the same reference
+ * validateVisualLevels measures against, so a clamped value is never a value
+ * the server then refuses.
+ */
 export function clampVisualLevel(
   bias: VisualBracketBias,
   entry: number,
   value: number,
   moving: 'target' | 'stop',
-  tickSize: number | null | undefined
+  tickSize: number | null | undefined,
+  referencePrice?: number | null
 ): number {
   const gap = gapFor(tickSize)
-  let price = Number.isFinite(value) && value > 0 ? value : entry
+  const reference =
+    referencePrice != null && Number.isFinite(referencePrice) && referencePrice > 0
+      ? referencePrice
+      : entry
+  let price = Number.isFinite(value) && value > 0 ? value : reference
+  const { above, below } = boundariesFor(reference, gap, tickSize)
 
   if (moving === 'target') {
-    price = bias === 'bullish' ? Math.max(price, entry + gap) : Math.min(price, entry - gap)
+    price = bias === 'bullish' ? Math.max(price, above) : Math.min(price, below)
   } else {
-    price = bias === 'bullish' ? Math.min(price, entry - gap) : Math.max(price, entry + gap)
+    price = bias === 'bullish' ? Math.min(price, below) : Math.max(price, above)
   }
 
   price = roundToTick(price, tickSize)
@@ -133,23 +168,25 @@ export function clampVisualLevel(
 export function validateVisualLevels(
   bias: VisualBracketBias,
   levels: VisualBracketLevels,
-  tickSize: number | null | undefined
+  tickSize: number | null | undefined,
+  referencePrice?: number | null
 ): string | null {
   const gap = gapFor(tickSize)
   if (!(levels.entryReference > 0) || !(levels.targetPrice > 0) || !(levels.stopPrice > 0))
     return 'Entry, target and stop must all be positive prices.'
   if (Math.abs(levels.targetPrice - levels.stopPrice) < gap)
     return 'Target and stop cannot be the same price.'
+  const reference =
+    referencePrice != null && Number.isFinite(referencePrice) && referencePrice > 0
+      ? referencePrice
+      : levels.entryReference
+  const { above, below } = boundariesFor(reference, gap, tickSize)
   if (bias === 'bullish') {
-    if (levels.targetPrice <= levels.entryReference + gap)
-      return 'Target must be above entry for a bullish trade.'
-    if (levels.stopPrice >= levels.entryReference - gap)
-      return 'Stop must be below entry for a bullish trade.'
+    if (levels.targetPrice < above) return 'Target must be above the price for a bullish trade.'
+    if (levels.stopPrice > below) return 'Stop must be below the price for a bullish trade.'
   } else {
-    if (levels.targetPrice >= levels.entryReference - gap)
-      return 'Target must be below entry for a bearish trade.'
-    if (levels.stopPrice <= levels.entryReference + gap)
-      return 'Stop must be above entry for a bearish trade.'
+    if (levels.targetPrice > below) return 'Target must be below the price for a bearish trade.'
+    if (levels.stopPrice < above) return 'Stop must be above the price for a bearish trade.'
   }
   return null
 }

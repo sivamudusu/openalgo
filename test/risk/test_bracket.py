@@ -57,19 +57,35 @@ class TestValidateLevels:
 
     def test_bullish_target_below_entry_is_refused(self):
         problems = validate_levels(Bias.BULLISH, 100.0, 95.0, 90.0)
-        assert any("above entry" in p for p in problems)
+        assert any("above the price" in p for p in problems)
 
     def test_bullish_stop_above_entry_is_refused(self):
         problems = validate_levels(Bias.BULLISH, 100.0, 120.0, 105.0)
-        assert any("below entry" in p for p in problems)
+        assert any("below the price" in p for p in problems)
 
     def test_bearish_target_above_entry_is_refused(self):
         problems = validate_levels(Bias.BEARISH, 100.0, 105.0, 110.0)
-        assert any("below entry" in p for p in problems)
+        assert any("below the price" in p for p in problems)
 
     def test_bearish_stop_below_entry_is_refused(self):
         problems = validate_levels(Bias.BEARISH, 100.0, 80.0, 95.0)
-        assert any("above entry" in p for p in problems)
+        assert any("above the price" in p for p in problems)
+
+    def test_a_trail_may_cross_the_entry_against_the_reference(self):
+        # A bearish trade whose index has already fallen into profit may have
+        # its stop below the entry. The entry is history; the reference is
+        # where the market is now.
+        problems = validate_levels(Bias.BEARISH, 100.0, 80.0, 95.0, 0.05, reference_price=90.0)
+        assert problems == ()
+
+    def test_the_stop_may_not_touch_the_reference(self):
+        problems = validate_levels(Bias.BEARISH, 100.0, 80.0, 90.0, 0.05, reference_price=90.0)
+        assert any("above the price" in p for p in problems)
+
+    def test_the_reference_is_used_when_it_is_given(self):
+        # Against the entry the stop is fine; against the live price it is not.
+        assert validate_levels(Bias.BEARISH, 100.0, 80.0, 95.0, 0.05) != ()
+        assert validate_levels(Bias.BEARISH, 100.0, 80.0, 95.0, 0.05, reference_price=90.0) == ()
 
     def test_missing_values_are_reported(self):
         problems = validate_levels(Bias.BULLISH, None, None, None)
@@ -109,6 +125,38 @@ class TestClampLevel:
         assert clamp_level(
             Bias.BULLISH, 100.0, 120.03, moving="target", tick_size=0.05
         ) == pytest.approx(120.05)
+
+    def test_a_clamped_value_is_always_accepted(self):
+        # The browser clamps the drag and the server validates what it gets.
+        # If the two disagree about the boundary the trader is refused a
+        # stop they were allowed to drag to.
+        entry = 100.0
+        for bias in (Bias.BULLISH, Bias.BEARISH):
+            for reference in (None, 90.0, 110.0):
+                target = clamp_level(
+                    bias,
+                    entry,
+                    999.0,
+                    moving="target",
+                    tick_size=0.05,
+                    reference_price=reference,
+                )
+                stop = clamp_level(
+                    bias,
+                    entry,
+                    -999.0,
+                    moving="stop",
+                    tick_size=0.05,
+                    reference_price=reference,
+                )
+                problems = validate_levels(bias, entry, target, stop, 0.05, reference)
+                assert not any("the price" in p for p in problems), (
+                    bias,
+                    reference,
+                    target,
+                    stop,
+                    problems,
+                )
 
     def test_unknown_moving_raises(self):
         with pytest.raises(ValueError):

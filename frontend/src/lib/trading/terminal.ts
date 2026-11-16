@@ -7983,6 +7983,7 @@ export class TradingTerminal {
       onClick: (click) => this.cb.onVisualOrderClick?.(click),
       onLevelChange: (levels) => this.cb.onVisualBracketLevelChange?.(levels),
       onLevelCommit: (levels) => this.cb.onVisualBracketLevelCommit?.(levels),
+      referencePrice: () => this.lastLtp,
     })
     this.visualBracket.setEnabled(this.visualOrderEnabled)
     this.visualBracket.setOverlay(this.visualBracketState)

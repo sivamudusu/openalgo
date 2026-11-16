@@ -20,6 +20,12 @@ export interface VisualBracketControllerOptions {
   onClick: (click: VisualBracketClick) => void
   onLevelChange: (levels: VisualBracketLevels) => void
   onLevelCommit: (levels: VisualBracketLevels) => void
+  /**
+   * The live price of the index, used as the reference a dragged level is
+   * measured against. A stop that has trailed into profit sits between the
+   * entry and the live price, and is only legal measured against the price.
+   */
+  referencePrice?: () => number | null
 }
 
 /**
@@ -119,13 +125,28 @@ export class VisualBracketController {
 
   private withLevel(moving: 'target' | 'stop', price: number): VisualBracketView {
     const state = this.state as VisualBracketView
+    const reference = this.opts.referencePrice?.() ?? null
     const target =
       moving === 'target'
-        ? clampVisualLevel(state.bias, state.entryReference, price, 'target', state.tickSize)
+        ? clampVisualLevel(
+            state.bias,
+            state.entryReference,
+            price,
+            'target',
+            state.tickSize,
+            reference
+          )
         : state.targetPrice
     const stop =
       moving === 'stop'
-        ? clampVisualLevel(state.bias, state.entryReference, price, 'stop', state.tickSize)
+        ? clampVisualLevel(
+            state.bias,
+            state.entryReference,
+            price,
+            'stop',
+            state.tickSize,
+            reference
+          )
         : state.stopPrice
     return {
       ...state,

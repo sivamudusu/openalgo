@@ -60,7 +60,48 @@ describe('visual bracket helpers', () => {
         { entryReference: 24500, targetPrice: 24400, stopPrice: 24450 },
         0.05
       )
-    ).toContain('above entry')
+    ).toContain('above the price')
+  })
+
+  it('lets a stop trail past the entry when the price has already moved', () => {
+    // A bearish trade whose index has fallen into profit may carry its stop
+    // below the entry. The entry is history; the reference is where the
+    // market is now.
+    expect(
+      validateVisualLevels(
+        'bearish',
+        { entryReference: 24500, targetPrice: 24000, stopPrice: 24200 },
+        0.05,
+        24100
+      )
+    ).toBeNull()
+    expect(
+      validateVisualLevels(
+        'bearish',
+        { entryReference: 24500, targetPrice: 24000, stopPrice: 24200 },
+        0.05
+      )
+    ).toContain('above the price')
+  })
+
+  it('accepts every level the clamp allows', () => {
+    // The browser clamps the drag and the server validates what it gets. If
+    // the two disagree about the boundary the trader is refused a stop they
+    // were allowed to drag to.
+    for (const bias of ['bullish', 'bearish'] as const) {
+      for (const reference of [undefined, 24100, 24900]) {
+        const target = clampVisualLevel(bias, 24500, 99999, 'target', 0.05, reference)
+        const stop = clampVisualLevel(bias, 24500, -999, 'stop', 0.05, reference)
+        expect(
+          validateVisualLevels(
+            bias,
+            { entryReference: 24500, targetPrice: target, stopPrice: stop },
+            0.05,
+            reference
+          )
+        ).toBeNull()
+      }
+    }
   })
 
   it('computes risk reward from the absolute distances', () => {
