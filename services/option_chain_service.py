@@ -241,6 +241,11 @@ def _atm_implied_volatility(chain: list[dict[str, Any]], atm_strike: float) -> f
 
     The two ATM legs are averaged so a one-sided quote does not set the
     expected move on its own. None when the chain carries no usable volatility.
+
+    The chain carries the volatility as a percentage, the way the Greeks are
+    reported, so it is divided by a hundred here. Passing it on unscaled makes
+    the expected move a hundred times too wide, which is a number nobody would
+    believe: an index that moves by 30,000 points in a day is not a market.
     """
     values: list[float] = []
     for row in chain:
@@ -257,7 +262,7 @@ def _atm_implied_volatility(chain: list[dict[str, Any]], atm_strike: float) -> f
         break
     if not values:
         return None
-    return sum(values) / len(values)
+    return (sum(values) / len(values)) / 100.0
 
 
 def _forward_from_chain(
